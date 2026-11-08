@@ -2,7 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron';
 import { readFile, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import type { Result, WorkspaceEvent, WorkspaceSnapshot } from '../shared/types';
+import type { Config, Result, WorkspaceEvent, WorkspaceSnapshot } from '../shared/types';
+import { DEFAULT_CONFIG } from '../shared/config';
+import { readConfig, writeConfig } from './config';
 import { atomicJson, optionalJson, TicketFiles, WorkspaceError } from './files';
 import { CopilotSessions } from './sessions';
 
@@ -12,6 +14,9 @@ if (process.env.SUPPORT_DATA_DIR) app.setPath('userData', process.env.SUPPORT_DA
 let window: BrowserWindow;
 let files: TicketFiles;
 let sessions: CopilotSessions;
+let config: Config = { ...DEFAULT_CONFIG };
+let configError: string | null = null;
+let lastTicketId: string | null = null;
 let shuttingDown = false;
 let startupError: string | null = null;
 let quitApproved = false;
@@ -25,7 +30,7 @@ function text(value: unknown, max = 100_000): string {
 
 function snapshot(): WorkspaceSnapshot {
   if (startupError) throw new WorkspaceError('STARTUP', startupError);
-  return { root: files.root, tickets: files.tickets, sessions: sessions.all() };
+  return { root: files.root, tickets: files.tickets, sessions: sessions.all(), config, configError, lastTicketId };
 }
 
 function emit(event: WorkspaceEvent): void {
@@ -71,8 +76,23 @@ function installHandlers(): void {
     await files.setRoot(chosen.filePaths[0]);
     await sessions.initialize();
     startupError = null;
-    await atomicJson(path.join(files.dataDir, 'settings.json'), { root: files.root });
+    lastTicketId = null;
+    await atomicJson(path.join(files.dataDir, 'settings.json'), { root: files.root, lastTicketId });
     return snapshot();
+  });
+  handle('config', async (patch) => {
+    if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) throw new WorkspaceError('INPUT', 'Invalid layout settings.');
+    const allowed = new Set(['chatSide', 'filesSide', 'filesHidden']);
+    if (Object.keys(patch).some((key) => !allowed.has(key))) throw new WorkspaceError('INPUT', 'Invalid layout settings.');
+    config = await writeConfig(patch as Partial<Config>);
+    configError = null;
+    return config;
+  });
+  handle('last-ticket', async (id) => {
+    const value = id === null ? null : text(id, 100);
+    if (value) files.ticket(value);
+    lastTicketId = value;
+    await atomicJson(path.join(files.dataDir, 'settings.json'), { root: files.root, lastTicketId });
   });
   handle('files', (id) => { const ticketId = text(id, 100); files.watch(ticketId); return files.list(ticketId); });
   handle('main-file', async (id, file) => { await files.setMainFile(text(id, 100), text(file, 4096)); return snapshot(); });
@@ -127,6 +147,8 @@ function installHandlers(): void {
   handle('stop', (id) => sessions.stop(text(id, 100)));
   handle('new', (id) => sessions.newConversation(text(id, 100)));
   handle('conversation', (id, conversation) => sessions.selectConversation(text(id, 100), text(conversation, 100)));
+  handle('discover', (id) => sessions.discover(text(id, 100)));
+  handle('attach', (id, sessionId) => sessions.attach(text(id, 100), text(sessionId, 200)));
   handle('approve', (id, approval, option) => sessions.approve(text(id, 100), text(approval, 100), option === null ? null : text(option, 100)));
 }
 
@@ -153,12 +175,20 @@ app.whenReady().then(async () => {
   files = new TicketFiles(app.getPath('userData'), emit);
   sessions = new CopilotSessions(files, emit);
   try {
+    const loadedConfig = await readConfig();
+    config = loadedConfig.config;
+    configError = loadedConfig.error;
     const stored = await optionalJson(path.join(files.dataDir, 'settings.json'));
-    let root = process.env.SUPPORT_TICKETS_ROOT;
-    if (!root && stored !== null) {
+    if (stored !== null) {
       if (typeof stored !== 'object' || !('root' in stored) || typeof stored.root !== 'string') throw new WorkspaceError('STATE', 'Saved ticket-root settings are invalid.');
-      root = stored.root;
+      const saved = stored as Record<string, unknown>;
+      if (saved.lastTicketId !== undefined && saved.lastTicketId !== null && typeof saved.lastTicketId !== 'string') {
+        throw new WorkspaceError('STATE', 'Saved last-ticket setting is invalid.');
+      }
+      lastTicketId = typeof saved.lastTicketId === 'string' ? saved.lastTicketId : null;
     }
+    let root = process.env.SUPPORT_TICKETS_ROOT;
+    if (!root && stored !== null) root = (stored as Record<string, unknown>).root as string;
     if (!root && !app.isPackaged) {
       const candidate = path.join(process.cwd(), 'tickets');
       try { if ((await stat(candidate)).isDirectory()) root = candidate; }

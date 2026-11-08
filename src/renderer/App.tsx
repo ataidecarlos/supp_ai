@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { LifeBuoy, Search, FolderOpen, FileText, PanelLeft, Paperclip, ChevronRight, ShieldCheck, X, ArrowLeft, CircleCheck, LoaderCircle } from 'lucide-react';
 import type { Ticket, TicketFile, TicketSession, WorkspaceSnapshot } from '../shared/types';
+import { DEFAULT_CONFIG } from '../shared/config';
 import { Viewer } from './Viewer';
 import type { EditorHandle } from './Editor';
 import { Chat } from './Chat';
@@ -10,7 +11,9 @@ const label = (session?: TicketSession) => ({
 }[session?.activity ?? 'idle']);
 
 export function App() {
-  const [workspace, setWorkspace] = useState<WorkspaceSnapshot>({ root: null, tickets: [], sessions: [] });
+  const [workspace, setWorkspace] = useState<WorkspaceSnapshot>({
+    root: null, tickets: [], sessions: [], config: { ...DEFAULT_CONFIG }, configError: null, lastTicketId: null,
+  });
   const [ticketId, setTicketId] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, string>>({});
   const [ticketFiles, setTicketFiles] = useState<TicketFile[]>([]);

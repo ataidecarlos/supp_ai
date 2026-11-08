@@ -1,3 +1,6 @@
+import type { Config } from './config';
+export type { Config };
+
 export type Activity = 'idle' | 'starting' | 'running' | 'approval' | 'completed' | 'failed';
 
 export interface Ticket {
@@ -74,6 +77,9 @@ export interface WorkspaceSnapshot {
   root: string | null;
   tickets: Ticket[];
   sessions: TicketSession[];
+  config: Config;
+  configError: string | null;
+  lastTicketId: string | null;
 }
 
 export type WorkspaceEvent =
@@ -98,6 +104,10 @@ export interface WorkspaceApi {
   stop(ticketId: string): Promise<Result<void>>;
   newConversation(ticketId: string): Promise<Result<void>>;
   selectConversation(ticketId: string, conversationId: string): Promise<Result<void>>;
+  discover(ticketId: string): Promise<Result<SessionSummary[]>>;
+  attach(ticketId: string, sessionId: string): Promise<Result<void>>;
+  setConfig(patch: Partial<Config>): Promise<Result<Config>>;
+  setLastTicket(ticketId: string | null): Promise<Result<void>>;
   approve(ticketId: string, approvalId: string, optionId: string | null): Promise<Result<void>>;
   flushed(requestId: string, success: boolean): Promise<Result<void>>;
   onEvent(callback: (event: WorkspaceEvent) => void): () => void;
