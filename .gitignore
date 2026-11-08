@@ -8,3 +8,5 @@ tickets/
 .env
 .env.*
 !.env.example
+
+.superpowers/
