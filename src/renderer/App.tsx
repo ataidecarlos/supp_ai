@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import type { Config, SessionSummary, TicketFile, TicketSession, WorkspaceSnapshot } from '../shared/types';
 import { DEFAULT_CONFIG } from '../shared/config';
-import { Viewer } from './Viewer';
+import { Viewer, isAgentEditing } from './Viewer';
 import type { EditorHandle } from './Editor';
 import { Chat } from './Chat';
 import { Home } from './Home';
@@ -234,7 +234,10 @@ export function App() {
     onHide={() => { void setLayout({ filesHidden: true }); }}
     onSelectConversation={(id) => { void window.workspace.selectConversation(ticket.id, id).then((result) => { if (!result.ok) setError(result.error); }); }} /> : null;
 
-  const chat = ticket ? <div className="chat-panel" key="chat"><Chat key={ticket.id} ticket={ticket} session={session} send={send} onError={setError} /></div> : null;
+  const chat = ticket ? <div className="chat-panel" key="chat"><Chat key={ticket.id} ticket={ticket} session={session} send={send} onError={setError}
+    onInsert={ticket && file && /\.(md|markdown)$/i.test(file) && !isAgentEditing(session, ticket.root, file) ? (text) => {
+      if (!viewer.current?.insert(text)) setError('Resolve the current save or conflict before inserting.');
+    } : undefined} /></div> : null;
 
   const documentPanel = ticket ? <section className="workspace-panel" key="document" style={{ flexBasis: `${split}%` }}>
     <div className="panel-header"><div><FileText size={15} /><strong>{file ?? 'Choose a ticket summary'}</strong></div>

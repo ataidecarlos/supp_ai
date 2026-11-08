@@ -2,9 +2,9 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { EditorContent, useEditor } from '@tiptap/react';
 import { Bold, Italic, Heading2, List, ListOrdered, Code, Table2, Link2, AlertTriangle, Check, LoaderCircle } from 'lucide-react';
 import type { FileDocument } from '../shared/types';
-import { extensions, richMarkdownSafe } from './markdown';
+import { extensions, parseMarkdown, richMarkdownSafe } from './markdown';
 
-export interface EditorHandle { flush(): Promise<boolean> }
+export interface EditorHandle { flush(): Promise<boolean>; insert(text: string): boolean }
 
 interface Props {
   ticketId: string;
@@ -34,6 +34,7 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
   const modifyingRef = useRef(modifying);
   const conflictRef = useRef<FileDocument | null>(initialConflict);
   const saveRef = useRef<() => Promise<boolean>>(async () => true);
+  const sourceRef = useRef<HTMLTextAreaElement>(null);
 
   const changed = (value: string) => {
     content.current = value;
@@ -138,7 +139,24 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
     return operation;
   };
 
-  useImperativeHandle(ref, () => ({ flush: () => saveRef.current() }));
+  useImperativeHandle(ref, () => ({
+    flush: () => saveRef.current(),
+    insert: (text: string) => {
+      if (modifyingRef.current || conflictRef.current) return false;
+      if (mode === 'source') {
+        const area = sourceRef.current;
+        if (!area) return false;
+        const at = area.selectionStart ?? draft.length;
+        const next = `${draft.slice(0, at)}${text}${draft.slice(at)}`;
+        changed(next);
+        setSafe(richMarkdownSafe(next));
+        return true;
+      }
+      if (!editor) return false;
+      editor.chain().focus().insertContent(parseMarkdown(text), { updateSelection: true }).run();
+      return true;
+    },
+  }));
   useEffect(() => { receive(document); }, [document.revision]);
   useEffect(() => {
     modifyingRef.current = modifying;
@@ -211,7 +229,7 @@ export const MarkdownEditor = forwardRef<EditorHandle, Props>(function MarkdownE
       <input aria-label="Link target" value={linkInput} onChange={(event) => setLinkInput(event.target.value)} placeholder="Relative attachment path or https://..." autoFocus required />
       <button>Add</button><button type="button" onClick={() => setLinkInput(null)}>Cancel</button>
     </form>}
-    {mode === 'source' ? <textarea className="source-editor" aria-label="Markdown source" value={draft} readOnly={modifying} spellCheck={false} onChange={(event) => {
+    {mode === 'source' ? <textarea ref={sourceRef} className="source-editor" aria-label="Markdown source" value={draft} readOnly={modifying} spellCheck={false} onChange={(event) => {
       changed(event.target.value);
       setSafe(richMarkdownSafe(event.target.value));
     }} /> : <div className="document-scroll" onClick={(event) => {

@@ -15,6 +15,7 @@ const configFile = path.join(configDir, 'config.json');
 const ticketA = path.join(ticketsRoot, 'ticket_901');
 const ticketB = path.join(ticketsRoot, 'ticket_902');
 const markdownA = path.join(ticketA, 'ticket_901.md');
+const markdownB = path.join(ticketB, 'ticket_902.md');
 const screenshotPath = path.join(repoRoot, 'test-results', 'workspace.png');
 const initialA = '# Synthetic ticket 901\n\nA harmless desktop fixture.\n\n## Details\n\n- First item\n- Second item\n\n```text\nsynthetic log excerpt\n```\n\n| Field | Value |\n| --- | --- |\n| Status | Open |\n\nSee [the synthetic log](evidence.log).\n';
 const initialB = '# Synthetic ticket 902\n\nA second harmless fixture.\n';
@@ -115,6 +116,9 @@ try {
     await tab('ticket_902').click();
     await expect(page.locator('.message.agent')).toContainText('READY', { timeout: 120_000 });
     await expect(tab('ticket_902').locator('.complete-icon')).toBeVisible({ timeout: 120_000 });
+    await page.getByRole('button', { name: 'Insert into editor' }).last().click();
+    await expect(rich()).toContainText('READY');
+    await expect.poll(() => fs.readFile(markdownB, 'utf8'), { timeout: 20_000 }).toContain('READY');
     await expect(page.locator('.message.user')).toHaveCount(1);
     await tab('ticket_901').click();
     await expect(page.locator('.message.user')).toHaveCount(1);

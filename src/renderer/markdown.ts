@@ -1,4 +1,4 @@
-import { mergeAttributes, type AnyExtension } from '@tiptap/core';
+import { mergeAttributes, type AnyExtension, type JSONContent } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import Image from '@tiptap/extension-image';
@@ -35,6 +35,10 @@ function semantic(value: unknown): unknown {
   }
   if (!value.tokens && typeof value.text === 'string') retained.text = value.type === 'code' ? value.text : value.text.trim();
   return retained;
+}
+
+export function parseMarkdown(source: string): JSONContent {
+  return new MarkdownManager({ extensions: extensions() }).parse(source) as JSONContent;
 }
 
 export function richMarkdownSafe(source: string): boolean {

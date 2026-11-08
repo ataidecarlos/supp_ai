@@ -11,12 +11,22 @@ interface Props {
   onError: (message: string) => void;
 }
 
+export function isAgentEditing(session: TicketSession | undefined, ticketRoot: string, file: string): boolean {
+  const absolute = `${ticketRoot}\\${file}`.replaceAll('/', '\\').toLowerCase();
+  return session?.tools.some((tool) => tool.kind === 'edit' &&
+    ['pending', 'in_progress'].includes(tool.status) &&
+    tool.paths.some((target) => target.replaceAll('/', '\\').toLowerCase() === absolute)) ?? false;
+}
+
 export const Viewer = forwardRef<EditorHandle, Props>(function Viewer({ ticket, file, session, onLink, onError }, ref) {
   const [document, setDocument] = useState<FileDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const editor = useRef<EditorHandle>(null);
   const request = useRef(0);
-  useImperativeHandle(ref, () => ({ flush: () => editor.current?.flush() ?? Promise.resolve(true) }));
+  useImperativeHandle(ref, () => ({
+    flush: () => editor.current?.flush() ?? Promise.resolve(true),
+    insert: (text: string) => editor.current?.insert(text) ?? false,
+  }));
 
   useEffect(() => {
     let active = true;
@@ -34,10 +44,7 @@ export const Viewer = forwardRef<EditorHandle, Props>(function Viewer({ ticket, 
     return () => { active = false; unsubscribe(); };
   }, [ticket.id, file]);
 
-  const absolute = `${ticket.root}\\${file}`.replaceAll('/', '\\').toLowerCase();
-  const modifying = session?.tools.some((tool) => tool.kind === 'edit' &&
-    ['pending', 'in_progress'].includes(tool.status) &&
-    tool.paths.some((target) => target.replaceAll('/', '\\').toLowerCase() === absolute)) ?? false;
+  const modifying = isAgentEditing(session, ticket.root, file);
 
   if (error) return <div className="empty-state"><FileText size={34} /><h3>File unavailable</h3><p>{error}</p></div>;
   if (!document) return <div className="empty-state"><LoaderCircle className="spin" /><p>Opening evidence...</p></div>;

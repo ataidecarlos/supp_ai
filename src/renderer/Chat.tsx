@@ -7,9 +7,10 @@ interface Props {
   session?: TicketSession;
   send: (text: string) => Promise<boolean>;
   onError: (message: string) => void;
+  onInsert?: (text: string) => void;
 }
 
-export function Chat({ ticket, session, send, onError }: Props) {
+export function Chat({ ticket, session, send, onError, onInsert }: Props) {
   const [input, setInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
@@ -48,6 +49,7 @@ export function Chat({ ticket, session, send, onError }: Props) {
       {session?.messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
         <div className="message-label">{message.role === 'user' ? 'YOU' : message.role === 'agent' ? <><Sparkles size={12} /> COPILOT</> : 'WORKSPACE'}</div>
         <div className="message-body">{message.text}</div>
+        {message.role === 'agent' && onInsert && <button className="insert-button" onClick={() => onInsert(message.text)}>Insert into editor</button>}
       </article>)}
       {!!session?.tools.length && <div className="tool-list">
         {session.tools.map((tool) => <div key={tool.id} className={`tool ${tool.status}`}>

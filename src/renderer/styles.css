@@ -125,6 +125,8 @@ h1 { font-size: 24px; letter-spacing: -.6px; font-weight: 620; margin: 0; }
 .message { margin: 0 0 24px; }.message-label { display: flex; align-items: center; gap: 5px; font-size: 8px; font-weight: 650; letter-spacing: 1.1px; color: #9ba7be; margin-bottom: 8px; }
 .message-body { font-size: 12px; line-height: 1.9; color: #6c7b95; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message.user .message-body { border: 1px solid #e8edf7; background: #f4f6fb; border-radius: 9px; padding: 13px 15px; color: #5b6e8c; }.message.agent .message-label { color: #7d8dd3; }.message.notice .message-body { font-size: 10px; color: #a28f70; border-left: 2px solid #e1d4b7; padding-left: 10px; }
+.insert-button { margin-top: 8px; font-size: 9px; border: 1px solid #dfe5f3; background: #fff; color: #6f80a8; padding: 5px 8px; }
+.insert-button:hover { background: #f3f6fd; }
 .chat-composer { padding: 12px 20px 10px; }.composer-box { border: 1px solid #dfe5f0; background: #fff; box-shadow: 0 3px 9px #2f47750a; border-radius: 10px; padding: 12px 13px 9px; }.composer-box:focus-within { border-color: #b5c2ed; }
 .composer-box textarea { border: 0; width: 100%; resize: none; height: 62px; font-size: 11px; line-height: 1.7; color: #586b8b; background: transparent; }.composer-box textarea::placeholder { color: #a3acc0; }
 .composer-bottom { display: flex; align-items: center; justify-content: space-between; }.composer-bottom > span { display: flex; align-items: center; gap: 5px; color: #9faac0; font-size: 9px; }
