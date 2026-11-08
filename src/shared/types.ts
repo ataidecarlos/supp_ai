@@ -48,8 +48,15 @@ export interface Approval {
 export interface Conversation {
   id: string;
   createdAt: string;
+  title?: string;
   sessionId?: string;
   messages: ChatMessage[];
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  title: string | null;
+  updatedAt: string | null;
 }
 
 export interface TicketSession {

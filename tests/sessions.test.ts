@@ -6,7 +6,7 @@ import type { SpawnOptions } from 'node:child_process';
 import type { WorkspaceEvent } from '../src/shared/types';
 import { TicketFiles } from '../src/main/files';
 
-const controls = vi.hoisted(() => ({ noLoad: false, missing: false }));
+const controls = vi.hoisted(() => ({ noLoad: false, missing: false, noList: false, listFail: false }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
@@ -14,7 +14,12 @@ vi.mock('node:child_process', async (importOriginal) => {
     spawn: (_command: string, _args: readonly string[], options: SpawnOptions) => actual.spawn(
       controls.missing ? path.join(process.cwd(), 'missing-synthetic-copilot.exe') : process.execPath,
       controls.missing ? [] : [path.join(process.cwd(), 'tests', 'fixtures', 'fake-cli.mjs')],
-      { ...options, env: { ...options.env, FAKE_CLI_NO_LOAD: controls.noLoad ? '1' : '0' } },
+      { ...options, env: {
+        ...options.env,
+        FAKE_CLI_NO_LOAD: controls.noLoad ? '1' : '0',
+        FAKE_CLI_NO_LIST: controls.noList ? '1' : '0',
+        FAKE_CLI_LIST_FAIL: controls.listFail ? '1' : '0',
+      } },
     ),
   };
 });
@@ -48,6 +53,8 @@ afterEach(async () => {
   await Promise.all(sandboxes.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   controls.noLoad = false;
   controls.missing = false;
+  controls.noList = false;
+  controls.listFail = false;
 });
 
 describe('ticket-bound ACP conversations', () => {
@@ -142,5 +149,65 @@ describe('ticket-bound ACP conversations', () => {
     expect(CLI_ARGS).not.toContain('--allow-all');
     expect(cliEnvironment('C:\\synthetic\\ticket-home').COPILOT_HOME).toBe('C:\\synthetic\\ticket-home');
     expect(cliEnvironment('C:\\synthetic\\ticket-home').COPILOT_ALLOW_ALL).toBe('false');
+  });
+
+  it('discovers only sessions whose working directory is this ticket', async () => {
+    const h = await harness();
+    await h.sessions.send(h.a.id, 'alpha');
+    await h.sessions.send(h.b.id, 'beta');
+    const found = await h.sessions.discover(h.a.id);
+    expect(found).toHaveLength(1);
+    expect(found[0].title).toBeTruthy();
+  });
+
+  it('returns no sessions when the CLI cannot list them', async () => {
+    controls.noList = true;
+    const h = await harness();
+    await expect(h.sessions.discover(h.a.id)).resolves.toEqual([]);
+  });
+
+  it('reports a listing failure instead of failing the ticket', async () => {
+    controls.listFail = true;
+    const h = await harness();
+    await expect(h.sessions.discover(h.a.id)).rejects.toMatchObject({ code: 'CLI' });
+    expect(h.sessions.state(h.a.id).activity).toBe('idle');
+  });
+
+  it('attaches a discovered session and shows its transcript once', async () => {
+    const h = await harness();
+    await h.sessions.send(h.a.id, 'attach-marker');
+    const [summary] = await h.sessions.discover(h.a.id);
+    const before = h.sessions.state(h.a.id).conversations.length;
+    await h.sessions.attach(h.a.id, summary.sessionId);
+    expect(h.sessions.state(h.a.id).conversations).toHaveLength(before + 1);
+    expect(h.sessions.state(h.a.id).messages.map((message) => message.text).join(' ')).toContain('attach-marker');
+    const replayed = h.sessions.state(h.a.id).messages.length;
+    const markers = h.sessions.state(h.a.id).messages.filter((message) => message.text.includes('attach-marker')).length;
+    await h.sessions.send(h.a.id, 'after-attach');
+    expect(h.sessions.state(h.a.id).messages.filter((message) => message.text.includes('attach-marker'))).toHaveLength(markers);
+    expect(h.sessions.state(h.a.id).messages).toHaveLength(replayed + 2);
+  });
+
+  it('rejects ids that were not discovered and is busy-safe', async () => {
+    const h = await harness();
+    await expect(h.sessions.attach(h.a.id, 'made-up')).rejects.toMatchObject({ code: 'SESSION' });
+    const turn = h.sessions.send(h.a.id, '[DELAY] busy');
+    await vi.waitFor(() => expect(h.sessions.state(h.a.id).activity).toBe('running'));
+    await expect(h.sessions.attach(h.a.id, 'anything')).rejects.toMatchObject({ code: 'BUSY' });
+    await h.sessions.stop(h.a.id);
+    await turn;
+  });
+
+  it('rolls back a failed attach', async () => {
+    const h = await harness();
+    await h.sessions.send(h.a.id, 'keeper');
+    const [summary] = await h.sessions.discover(h.a.id);
+    const previous = h.sessions.state(h.a.id).currentId;
+    const conversations = h.sessions.state(h.a.id).conversations.length;
+    await h.sessions.destroy(h.a.id);
+    await rm(path.join(h.root, 'data', 'tickets', h.a.id, 'copilot', 'fake-sessions.json'), { force: true });
+    await expect(h.sessions.attach(h.a.id, summary.sessionId)).rejects.toBeTruthy();
+    expect(h.sessions.state(h.a.id).conversations).toHaveLength(conversations);
+    expect(h.sessions.state(h.a.id).currentId).toBe(previous);
   });
 });

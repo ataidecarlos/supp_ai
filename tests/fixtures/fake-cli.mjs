@@ -70,6 +70,7 @@ async function prompt(message) {
     response = 'EDITED';
   }
   session.history.push({ role: 'user', text }, { role: 'agent', text: response });
+  session.updatedAt = new Date().toISOString();
   await persist();
   chunk(sessionId, response.slice(0, 5));
   chunk(sessionId, response.slice(5));
@@ -93,11 +94,16 @@ async function handle(message) {
   }
   switch (message.method) {
     case 'initialize':
-      result(message.id, { protocolVersion: 1, agentCapabilities: { loadSession: process.env.FAKE_CLI_NO_LOAD !== '1' }, authMethods: [] });
+      result(message.id, {
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: process.env.FAKE_CLI_NO_LOAD !== '1' },
+        sessionCapabilities: process.env.FAKE_CLI_NO_LIST === '1' ? {} : { list: {} },
+        authMethods: [],
+      });
       break;
     case 'session/new': {
       const sessionId = randomUUID();
-      sessions.set(sessionId, { cwd: message.params.cwd, history: [] });
+      sessions.set(sessionId, { cwd: message.params.cwd, history: [], title: 'Synthetic session', updatedAt: new Date().toISOString() });
       await persist();
       result(message.id, { sessionId });
       break;
@@ -105,8 +111,19 @@ async function handle(message) {
     case 'session/load': {
       const session = sessions.get(message.params.sessionId);
       if (!session) throw new Error('Stale synthetic session');
-      for (const entry of session.history) if (entry.role === 'agent') chunk(message.params.sessionId, entry.text);
+      for (const entry of session.history) {
+        if (entry.role === 'user') update(message.params.sessionId, { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: entry.text } });
+        else chunk(message.params.sessionId, entry.text);
+      }
       result(message.id);
+      break;
+    }
+    case 'session/list': {
+      if (process.env.FAKE_CLI_LIST_FAIL === '1') throw new Error('Synthetic list failure');
+      const sessionsPage = [...sessions.entries()]
+        .filter(([, session]) => !message.params.cwd || session.cwd === message.params.cwd)
+        .map(([sessionId, session]) => ({ sessionId, cwd: session.cwd, title: session.title, updatedAt: session.updatedAt }));
+      result(message.id, { sessions: sessionsPage });
       break;
     }
     case 'session/prompt': await prompt(message); break;

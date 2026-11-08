@@ -4,7 +4,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import * as acp from '@agentclientprotocol/sdk';
-import type { Approval, Conversation, TicketSession, ToolActivity, WorkspaceEvent } from '../shared/types';
+import type { Approval, Conversation, SessionSummary, TicketSession, ToolActivity, WorkspaceEvent } from '../shared/types';
 import { atomicJson, optionalJson, revision, TicketFiles, WorkspaceError } from './files';
 
 interface PendingApproval {
@@ -18,6 +18,8 @@ interface Runtime {
   sessionId?: string;
   loading: boolean;
   stopping: boolean;
+  canList?: boolean;
+  capturing?: { bytes: number };
   agentMessage?: string;
   reads: Map<string, string>;
   leases: Map<string, () => void>;
@@ -33,6 +35,13 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+// The capability is advertised top-level by the RFD and under agentCapabilities by the SDK types.
+function canListSessions(response: acp.InitializeResponse): boolean {
+  const agent = response.agentCapabilities as (acp.AgentCapabilities & { sessionCapabilities?: acp.SessionCapabilities }) | undefined;
+  const top = response as acp.InitializeResponse & { sessionCapabilities?: acp.SessionCapabilities };
+  return Boolean(agent?.sessionCapabilities?.list ?? top.sessionCapabilities?.list);
+}
+
 function conversation(value: unknown): value is Conversation {
   return record(value) && typeof value.id === 'string' && typeof value.createdAt === 'string' &&
     (value.sessionId === undefined || typeof value.sessionId === 'string') && Array.isArray(value.messages) &&
@@ -43,10 +52,7 @@ function conversation(value: unknown): value is Conversation {
 export function cliEnvironment(home: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, COPILOT_HOME: home, COPILOT_ALLOW_ALL: 'false', COPILOT_AUTO_UPDATE: 'false' };
   delete env.COPILOT_CUSTOM_INSTRUCTIONS_DIRS;
-  delete env.COPILOT_MODEL;
-  delete env.COPILOT_PROVIDER_BASE_URL;
-  delete env.COPILOT_PROVIDER_API_KEY;
-  delete env.COPILOT_PROVIDER_TYPE;
+  // BYOK provider settings are the user's own configuration for the installed CLI.
   return env;
 }
 
@@ -58,6 +64,7 @@ export const CLI_ARGS = [
 export class CopilotSessions {
   private states = new Map<string, TicketSession>();
   private runtimes = new Map<string, Runtime>();
+  private discovered = new Map<string, SessionSummary[]>();
   private persistence = new Map<string, Promise<void>>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private cancellations = new Set<string>();
@@ -161,6 +168,122 @@ export class CopilotSessions {
     this.publish(id);
   }
 
+  async discover(id: string): Promise<SessionSummary[]> {
+    const ticket = this.files.ticket(id);
+    const runtime = this.runtimes.get(id);
+    try {
+      const found = runtime?.sessionId
+        ? (runtime.canList ? await this.listing(runtime.connection, ticket.root) : [])
+        : await this.probe(id, ticket.root);
+      this.discovered.set(id, found);
+      return found;
+    } catch (error) {
+      if (error instanceof WorkspaceError) throw error;
+      throw new WorkspaceError('CLI', `Cannot list Copilot sessions: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async listing(connection: acp.ClientConnection, cwd: string): Promise<SessionSummary[]> {
+    const found: SessionSummary[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 3; page++) {
+      const response = await connection.agent.request('session/list', cursor ? { cwd, cursor } : { cwd });
+      for (const info of response.sessions) {
+        if (info.cwd !== cwd) continue;
+        found.push({ sessionId: info.sessionId, title: info.title ?? null, updatedAt: info.updatedAt ?? null });
+      }
+      cursor = response.nextCursor ?? undefined;
+      if (!cursor) break;
+    }
+    return found.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+  }
+
+  private async probe(id: string, cwd: string): Promise<SessionSummary[]> {
+    const home = path.join(this.files.dataDir, 'tickets', id, 'copilot');
+    await mkdir(home, { recursive: true });
+    const child = spawn(process.env.COPILOT_CLI_PATH || 'copilot', CLI_ARGS, {
+      cwd, env: cliEnvironment(home), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    });
+    const connection = new acp.ClientApp().connect(acp.ndJsonStream(
+      Writable.toWeb(child.stdin),
+      Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+      { maxMessageBytes: 8 * 1024 * 1024 },
+    ));
+    let stderr = '';
+    child.stderr.on('data', (data: Buffer) => { stderr = (stderr + data.toString()).slice(-1000); });
+    const failure = new Promise<never>((_resolve, reject) => {
+      child.on('error', (error) => reject(new WorkspaceError('CLI', `Cannot start GitHub Copilot CLI: ${error.message}. Install it and run copilot login.`)));
+      child.on('exit', (code) => reject(new WorkspaceError('CLI', `Copilot CLI exited (${code ?? 'unknown'}) while listing sessions. ${stderr}`)));
+    });
+    failure.catch(() => undefined);
+    try {
+      const initialized = await Promise.race([connection.agent.request('initialize', {
+        protocolVersion: acp.PROTOCOL_VERSION,
+        clientCapabilities: {},
+        clientInfo: { name: 'support-workspace', version: '0.1.0' },
+      }), failure]);
+      if (!canListSessions(initialized)) return [];
+      return await Promise.race([this.listing(connection, cwd), failure]);
+    } finally {
+      connection.close();
+      child.stdin.end();
+      child.kill();
+    }
+  }
+
+  async attach(id: string, sessionId: string): Promise<void> {
+    const state = this.state(id);
+    if (['starting', 'running', 'approval'].includes(state.activity)) throw new WorkspaceError('BUSY', 'Stop the active turn before attaching a session.');
+    const summary = this.discovered.get(id)?.find((item) => item.sessionId === sessionId);
+    if (!summary) throw new WorkspaceError('SESSION', 'Find this ticket\'s Copilot sessions again before attaching.');
+    const previous = { currentId: state.currentId, messages: state.messages, tools: state.tools, error: state.error };
+    await this.destroy(id);
+    const current: Conversation = {
+      id: randomUUID(), createdAt: summary.updatedAt ?? new Date().toISOString(),
+      title: summary.title ?? undefined, sessionId, messages: [],
+    };
+    state.conversations.push(current);
+    state.currentId = current.id;
+    state.messages = current.messages;
+    state.tools = [];
+    state.error = null;
+    state.activity = 'starting';
+    this.publish(id);
+    try {
+      await this.connect(id, current);
+      state.activity = 'idle';
+      await this.persist(id);
+      this.publish(id);
+    } catch (error) {
+      state.conversations = state.conversations.filter((item) => item.id !== current.id);
+      state.currentId = previous.currentId;
+      state.messages = previous.messages;
+      state.tools = previous.tools;
+      state.error = previous.error;
+      state.activity = 'idle';
+      await this.persist(id);
+      this.publish(id);
+      throw error;
+    }
+  }
+
+  private capture(id: string, runtime: Runtime, update: acp.SessionNotification['update']): void {
+    if (update.sessionUpdate !== 'agent_message_chunk' && update.sessionUpdate !== 'user_message_chunk') return;
+    if (update.content.type !== 'text' || !update.content.text) return;
+    const capturing = runtime.capturing!;
+    const state = this.state(id);
+    const role = update.sessionUpdate === 'user_message_chunk' ? 'user' : 'agent';
+    const last = state.messages.at(-1);
+    if (last?.role === role) last.text += update.content.text;
+    else state.messages.push({ id: randomUUID(), role, text: update.content.text });
+    capturing.bytes += Buffer.byteLength(update.content.text);
+    if (capturing.bytes > 1024 * 1024) {
+      runtime.capturing = undefined;
+      this.notice(id, 'The attached session transcript was truncated at 1 MiB.');
+    } else this.schedulePersist(id);
+    this.publish(id);
+  }
+
   private async connect(id: string, current: Conversation): Promise<Runtime> {
     const existing = this.runtimes.get(id);
     if (existing?.sessionId) return existing;
@@ -215,11 +338,16 @@ export class CopilotSessions {
         clientInfo: { name: 'support-workspace', version: '0.1.0' },
       });
       if (!initialized.agentCapabilities?.loadSession) throw new WorkspaceError('CAPABILITY', 'This Copilot CLI cannot restore ACP sessions. Update the CLI before using this app.');
+      runtime.canList = canListSessions(initialized);
       if (current.sessionId) {
         runtime.loading = true;
         runtime.sessionId = current.sessionId;
+        // A conversation with no transcript is a fresh attach: capture the replay.
+        runtime.capturing = current.messages.length ? undefined : { bytes: 0 };
         await connection.agent.request('session/load', { sessionId: current.sessionId, cwd: ticket.root, mcpServers: [] });
         runtime.loading = false;
+        runtime.capturing = undefined;
+        runtime.agentMessage = undefined;
       } else {
         const session = await connection.agent.request('session/new', { cwd: ticket.root, mcpServers: [] });
         current.sessionId = session.sessionId;
@@ -296,7 +424,11 @@ export class CopilotSessions {
 
   private update(id: string, params: acp.SessionNotification): void {
     const runtime = this.runtimes.get(id);
-    if (!runtime || runtime.loading || (runtime.sessionId && params.sessionId !== runtime.sessionId)) return;
+    if (!runtime || (runtime.sessionId && params.sessionId !== runtime.sessionId)) return;
+    if (runtime.loading) {
+      if (runtime.capturing) this.capture(id, runtime, params.update);
+      return;
+    }
     const state = this.state(id);
     const update = params.update;
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
