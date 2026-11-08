@@ -1,0 +1,55 @@
+{
+  "name": "support-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ticket-centered desktop workspace for support engineers and GitHub Copilot CLI",
+  "main": "dist/main/index.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "npm run typecheck && node scripts/build.mjs",
+    "start": "electron .",
+    "package": "npm run build && electron-builder --win portable",
+    "test:desktop": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^2.4.0",
+    "@tiptap/core": "^3.33.0",
+    "@tiptap/extension-image": "^3.33.0",
+    "@tiptap/extension-link": "^3.33.0",
+    "@tiptap/extension-table": "^3.33.0",
+    "@tiptap/markdown": "^3.33.0",
+    "@tiptap/react": "^3.33.0",
+    "@tiptap/starter-kit": "^3.33.0",
+    "chokidar": "^5.0.0",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.0",
+    "vitest": "^4.0.0"
+  },
+  "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "^11.0.5"
+  },
+  "build": {
+    "appId": "local.support.workspace",
+    "productName": "Support Workspace",
+    "artifactName": "Support-Workspace-${version}-${arch}.${ext}",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "package.json"],
+    "asar": true,
+    "win": { "target": ["portable"], "signAndEditExecutable": false }
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+test-results/
+*.log
+.codebase-memory/
+tickets/
+.env
+.env.*
+!.env.example
