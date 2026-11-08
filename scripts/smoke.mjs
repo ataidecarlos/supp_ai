@@ -10,6 +10,8 @@ const args = process.env.SUPPORT_SMOKE_EXECUTABLE ? [] : ['.'];
 const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'supp-ai-smoke-'));
 const ticketsRoot = path.join(fixtureRoot, 'tickets');
 const dataRoot = path.join(fixtureRoot, 'data');
+const configDir = path.join(fixtureRoot, 'config');
+const configFile = path.join(configDir, 'config.json');
 const ticketA = path.join(ticketsRoot, 'ticket_901');
 const ticketB = path.join(ticketsRoot, 'ticket_902');
 const markdownA = path.join(ticketA, 'ticket_901.md');
@@ -26,8 +28,15 @@ async function waitForContents(file, expected) {
 }
 const source = () => page.getByRole('textbox', { name: 'Markdown source' });
 const rich = () => page.locator('.ProseMirror[contenteditable="true"]');
-const ticketButton = (name) => page.locator('.ticket-list button').filter({ hasText: name });
+const home = () => page.locator('.home-screen');
+const ticketRow = (name) => page.locator('.home-ticket').filter({ hasText: name });
+const tab = (name) => page.locator('.ticket-tabs .tab').filter({ hasText: name });
+const rail = () => page.locator('.files-rail');
 const conflict = () => page.locator('.conflict-banner');
+const pickTicket = async (name) => {
+  await page.getByRole('button', { name: 'Ticket menu' }).click();
+  await page.getByRole('menuitem', { name: new RegExp(name) }).click();
+};
 
 async function sendSyntheticPrompt() {
   const input = page.getByRole('textbox', { name: 'Message Copilot' });
@@ -43,16 +52,23 @@ try {
   await fs.writeFile(markdownA, initialA);
   await fs.writeFile(path.join(ticketB, 'ticket_902.md'), initialB);
   await fs.writeFile(path.join(ticketA, 'evidence.log'), 'Synthetic evidence only.\n');
-  const env = { ...process.env, SUPPORT_TICKETS_ROOT: ticketsRoot, SUPPORT_DATA_DIR: dataRoot };
+  const env = { ...process.env, SUPPORT_TICKETS_ROOT: ticketsRoot, SUPPORT_DATA_DIR: dataRoot, SUPPORT_CONFIG_DIR: configDir };
   delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({ executablePath: executable, args, cwd: repoRoot, env, timeout: 30_000 });
   page = await app.firstWindow();
   page.setDefaultTimeout(10_000);
   page.on('pageerror', (error) => pageErrors.push(error));
+  await expect(home()).toBeVisible();
+  await ticketRow('ticket_901').click();
   await expect(rich()).toContainText('Synthetic ticket 901');
   await waitForContents(markdownA, initialA);
-  await expect(page.locator('.file-pane')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Toggle ticket files' }).click();
+  await expect(rail()).toBeVisible();
+  await page.getByRole('button', { name: 'Hide files' }).click();
+  await expect(rail()).toHaveCount(0);
+  await expect.poll(async () => JSON.parse(await fs.readFile(configFile, 'utf8')).filesHidden).toBe(true);
+  await page.getByRole('button', { name: 'Layout menu' }).click();
+  await page.getByRole('menuitem', { name: 'Show files' }).click();
+  await expect(rail()).toBeVisible();
   await page.getByText('evidence.log', { exact: true }).click();
   await expect(page.locator('.text-view')).toContainText('Synthetic evidence only.');
   await page.locator('button[title="Back to ticket summary"]').click();
@@ -72,32 +88,36 @@ try {
   await source().fill(localDraft);
   await fs.writeFile(markdownA, `${initialA}\nExternal synthetic edit.\n`);
   await expect(conflict()).toBeVisible();
-  await ticketButton('ticket_902').click();
+  await pickTicket('ticket_902');
   await expect(conflict()).toBeVisible();
   await expect(source()).toHaveValue(localDraft);
   await page.getByRole('button', { name: 'Keep my version' }).click();
   await expect(conflict()).toHaveCount(0);
   await waitForContents(markdownA, localDraft);
-  await ticketButton('ticket_902').click();
+  await pickTicket('ticket_902');
   await expect(rich()).toContainText('Synthetic ticket 902');
-  await ticketButton('ticket_901').click();
+  await pickTicket('ticket_901');
   await expect(source()).toHaveValue(localDraft);
 
   if (process.env.RUN_COPILOT_SMOKE === '1') {
     console.log('Live smoke: concurrent conversations');
     await sendSyntheticPrompt();
-    await ticketButton('ticket_902').click();
+    await tab('ticket_902').click();
     await sendSyntheticPrompt();
-    await ticketButton('ticket_901').click();
+    await tab('ticket_901').click();
     await expect(page.locator('.message.agent')).toContainText('READY', { timeout: 120_000 });
-    await expect(ticketButton('ticket_901')).toContainText('Completed', { timeout: 120_000 });
-    await ticketButton('ticket_902').click();
+    await expect(tab('ticket_901').locator('.complete-icon')).toBeVisible({ timeout: 120_000 });
+    await tab('ticket_902').click();
     await expect(page.locator('.message.agent')).toContainText('READY', { timeout: 120_000 });
-    await expect(ticketButton('ticket_902')).toContainText('Completed', { timeout: 120_000 });
+    await expect(tab('ticket_902').locator('.complete-icon')).toBeVisible({ timeout: 120_000 });
     await expect(page.locator('.message.user')).toHaveCount(1);
-    await ticketButton('ticket_901').click();
+    await tab('ticket_901').click();
     await expect(page.locator('.message.user')).toHaveCount(1);
   }
+  await expect(tab('ticket_901')).toBeVisible();
+  await page.locator('.ticket-tabs button[aria-label="Close ticket_902"]').click();
+  await expect(tab('ticket_902')).toHaveCount(0);
+  await expect(tab('ticket_901')).toHaveClass(/active/);
   await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath, fullPage: true });
   if (pageErrors.length) throw new AggregateError(pageErrors, 'Renderer had uncaught errors.');
@@ -119,7 +139,7 @@ try {
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     await expect(page.locator('.message.agent')).toHaveCount(2, { timeout: 120_000 });
     await expect(page.locator('.message.agent').last()).toContainText('READY', { timeout: 120_000 });
-    await expect(ticketButton('ticket_901')).toContainText('Completed', { timeout: 120_000 });
+    await expect(tab('ticket_901').locator('.complete-icon')).toBeVisible({ timeout: 120_000 });
     console.log('Live smoke: automatic file edit and modification banner');
     await page.evaluate(() => {
       globalThis.supportSmoke = { modifyingBanner: false, localApproval: false };
@@ -130,7 +150,7 @@ try {
     });
     await page.getByRole('textbox', { name: 'Message Copilot' }).fill("Use apply_patch to append a paragraph with the exact text 'Copilot synthetic evidence.' to this ticket's main Markdown summary. Do not use shell commands or modify any other files. Reply EDITED when done.");
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
-    await expect(ticketButton('ticket_901')).toContainText('Completed', { timeout: 120_000 });
+    await expect(tab('ticket_901').locator('.complete-icon')).toBeVisible({ timeout: 120_000 });
     await expect.poll(() => fs.readFile(markdownA, 'utf8'), { timeout: 120_000 }).toContain('Copilot synthetic evidence.');
     await expect(source()).toHaveValue(/Copilot synthetic evidence\./);
     expect(await page.evaluate(() => globalThis.supportSmoke)).toEqual({ modifyingBanner: true, localApproval: false });
@@ -138,6 +158,25 @@ try {
     await app.close();
     app = undefined;
   }
+  await fs.writeFile(configFile, JSON.stringify({ chatSide: 'right', filesSide: 'left', filesHidden: false }));
+  console.log('Desktop smoke: layout and last view after restart');
+  app = await electron.launch({ executablePath: executable, args, cwd: repoRoot, env, timeout: 30_000 });
+  page = await app.firstWindow();
+  page.setDefaultTimeout(10_000);
+  page.on('pageerror', (error) => pageErrors.push(error));
+  await expect(tab('ticket_901')).toHaveClass(/active/);
+  await expect(home()).toHaveCount(0);
+  await expect(page.locator('.workspace-body > *').first()).toHaveClass(/files-rail/);
+  await expect(page.locator('.workspace-body > *').last()).toHaveClass(/chat-panel/);
+  await page.getByRole('button', { name: 'Layout menu' }).click();
+  await page.getByRole('menuitem', { name: 'Chat on the left' }).click();
+  await expect.poll(async () => JSON.parse(await fs.readFile(configFile, 'utf8')).chatSide).toBe('left');
+  await page.getByRole('button', { name: 'Ticket menu' }).click();
+  await page.getByRole('menuitem', { name: 'Home', exact: true }).click();
+  await expect(home()).toBeVisible();
+  await expect.poll(async () => JSON.parse(await fs.readFile(path.join(dataRoot, 'settings.json'), 'utf8')).lastTicketId).toBeNull();
+  await app.close();
+  app = undefined;
   succeeded = true;
   console.log(`Desktop smoke test passed. Screenshot: ${screenshotPath}`);
 } catch (error) {

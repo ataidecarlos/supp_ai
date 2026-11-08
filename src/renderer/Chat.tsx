@@ -35,12 +35,6 @@ export function Chat({ ticket, session, send, onError }: Props) {
         void window.workspace.newConversation(ticket.id).then((result) => { if (!result.ok) onError(result.error); });
       }}><Plus size={17} /></button>
     </div>
-    {session && session.conversations.length > 1 && <div className="conversation-select">
-      <label htmlFor="conversation">Conversation</label>
-      <select id="conversation" value={session.currentId ?? ''} disabled={busy} onChange={(event) => {
-        void window.workspace.selectConversation(ticket.id, event.target.value).then((result) => { if (!result.ok) onError(result.error); });
-      }}>{session.conversations.map((item, index) => <option key={item.id} value={item.id}>#{index + 1} · {new Date(item.createdAt).toLocaleString()}</option>)}</select>
-    </div>}
     <div className="chat-transcript" ref={transcript}>
       {!session?.messages.length && <div className="chat-welcome">
         <div className="agent-orb"><Sparkles size={23} /></div>
