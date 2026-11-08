@@ -62,6 +62,8 @@ try {
   await ticketRow('ticket_901').click();
   await expect(rich()).toContainText('Synthetic ticket 901');
   await waitForContents(markdownA, initialA);
+  await expect(rail().getByRole('button', { name: 'Find sessions' })).toBeVisible();
+  await expect(page.locator('.global-error')).toHaveCount(0);
   await expect(rail()).toBeVisible();
   await page.getByRole('button', { name: 'Hide files' }).click();
   await expect(rail()).toHaveCount(0);
@@ -106,6 +108,9 @@ try {
     await sendSyntheticPrompt();
     await tab('ticket_901').click();
     await expect(page.locator('.message.agent')).toContainText('READY', { timeout: 120_000 });
+    await expect(rail().getByRole('button', { name: /Conversation 1/ })).toBeVisible();
+    const attachButtons = rail().getByRole('button', { name: /Attach/ });
+    if (await attachButtons.count()) await expect(attachButtons.first()).toBeEnabled();
     await expect(tab('ticket_901').locator('.complete-icon')).toBeVisible({ timeout: 120_000 });
     await tab('ticket_902').click();
     await expect(page.locator('.message.agent')).toContainText('READY', { timeout: 120_000 });

@@ -3,7 +3,7 @@ import {
   LifeBuoy, FolderOpen, FileText, Paperclip, ChevronDown, ChevronRight, ShieldCheck, X, ArrowLeft,
   CircleCheck, LoaderCircle, Menu,
 } from 'lucide-react';
-import type { Config, TicketFile, TicketSession, WorkspaceSnapshot } from '../shared/types';
+import type { Config, SessionSummary, TicketFile, TicketSession, WorkspaceSnapshot } from '../shared/types';
 import { DEFAULT_CONFIG } from '../shared/config';
 import { Viewer } from './Viewer';
 import type { EditorHandle } from './Editor';
@@ -21,6 +21,10 @@ export function App() {
   const [selectedFiles, setSelectedFiles] = useState<Record<string, string>>({});
   const [ticketFiles, setTicketFiles] = useState<TicketFile[]>([]);
   const [menu, setMenu] = useState<'tickets' | 'layout' | null>(null);
+  const [discovered, setDiscovered] = useState<Record<string, SessionSummary[]>>({});
+  const [discovering, setDiscovering] = useState<string | null>(null);
+  const [discoveryError, setDiscoveryError] = useState<Record<string, string | null>>({});
+  const attempted = useRef(new Set<string>());
   const [error, setError] = useState<string | null>(null);
   const [configDismissed, setConfigDismissed] = useState(false);
   const [initializing, setInitializing] = useState(true);
@@ -70,6 +74,34 @@ export function App() {
   useEffect(() => { if (activeId) { setTicketFiles([]); void refreshFiles(activeId); } }, [activeId]);
 
   const guard = async (): Promise<boolean> => !viewer.current || await viewer.current.flush();
+
+  async function findSessions(id: string, auto: boolean): Promise<void> {
+    setDiscovering(id);
+    setDiscoveryError((current) => ({ ...current, [id]: null }));
+    const result = await window.workspace.discover(id);
+    setDiscovering(null);
+    if (!result.ok) {
+      setDiscoveryError((current) => ({ ...current, [id]: result.error }));
+      return;
+    }
+    setDiscovered((current) => ({ ...current, [id]: result.value }));
+    if (!auto || !result.value.length) return;
+    const attach = await window.workspace.attach(id, result.value[0].sessionId);
+    if (!attach.ok) setDiscoveryError((current) => ({ ...current, [id]: attach.error }));
+  }
+
+  useEffect(() => {
+    if (!ticket || attempted.current.has(ticket.id) || session?.conversations.length) return;
+    attempted.current.add(ticket.id);
+    void findSessions(ticket.id, true);
+  }, [activeId, session?.conversations.length]);
+
+  async function attachSession(id: string, sessionId: string): Promise<void> {
+    const result = await window.workspace.attach(id, sessionId);
+    if (!result.ok) { setDiscoveryError((current) => ({ ...current, [id]: result.error })); return; }
+    setDiscoveryError((current) => ({ ...current, [id]: null }));
+    await refreshFiles(id);
+  }
 
   async function setLayout(patch: Partial<Config>) {
     const result = await window.workspace.setConfig(patch);
@@ -188,6 +220,11 @@ export function App() {
   </> : null;
 
   const rail = ticket ? <FilesRail key="files" ticket={ticket} files={ticketFiles} file={file} session={session} side={config.filesSide}
+    discovered={discovered[ticket.id] ?? []}
+    discovering={discovering === ticket.id}
+    discoveryError={discoveryError[ticket.id] ?? null}
+    onDiscover={() => { void findSessions(ticket.id, false); }}
+    onAttach={(id) => { void attachSession(ticket.id, id); }}
     onOpenFile={(path) => { void openFile(path); }}
     onImport={() => { void (async () => {
       if (!await guard()) { setError('Resolve the current save before importing evidence.'); return; }

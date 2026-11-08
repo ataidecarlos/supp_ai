@@ -79,10 +79,14 @@ h1 { font-size: 24px; letter-spacing: -.6px; font-weight: 620; margin: 0; }
 .file-list span { flex: 1; word-break: break-word; }.file-list small { font-size: 7px; color: #8a99b9; }
 .file-list .active { color: #6072cf; background: #edf1fc; }
 .rail-sessions { border-top: 1px solid #e9edf4; max-height: 40%; overflow: auto; padding: 10px 8px; flex-shrink: 0; }
-.rail-heading { font-size: 9px; letter-spacing: 1.2px; color: #8792a5; font-weight: 650; padding: 2px 6px 8px; }
+.rail-heading { display: flex; align-items: center; justify-content: space-between; font-size: 9px; letter-spacing: 1.2px; color: #8792a5; font-weight: 650; padding: 2px 6px 8px; }
+.rail-refresh { padding: 2px; color: #98a2b4; }
 .rail-sessions button { width: 100%; justify-content: flex-start; text-align: left; font-size: 10px; padding: 8px 6px; color: #7d8aa0; gap: 6px; }
 .rail-sessions button small { margin-left: auto; font-size: 8px; color: #a3adbf; }
 .rail-sessions .active { background: #edf1fc; color: #6072cf; }
+.rail-unattached span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-unattached small { color: #6e80c9; font-weight: 600; }
+.rail-error { font-size: 9px; color: #b0896a; line-height: 1.6; padding: 4px 6px; margin: 0; overflow-wrap: anywhere; }
 .rail-empty { display: flex; align-items: center; gap: 5px; font-size: 9px; color: #a0aabb; padding: 4px 6px; line-height: 1.6; margin: 0; }
 .files-rail-footer { font-size: 9px; color: #a0aabb; padding: 12px 14px; border-top: 1px solid #e9edf4; }
 .editor-layout { display: flex; flex-direction: column; flex: 1; min-height: 0; }

@@ -14,16 +14,16 @@ vi.mock('node:child_process', async (importOriginal) => {
     spawn: (_command: string, _args: readonly string[], options: SpawnOptions) => actual.spawn(
       controls.missing ? path.join(process.cwd(), 'missing-synthetic-copilot.exe') : process.execPath,
       controls.missing ? [] : [path.join(process.cwd(), 'tests', 'fixtures', 'fake-cli.mjs')],
-      { ...options, env: {
-        ...options.env,
-        FAKE_CLI_NO_LOAD: controls.noLoad ? '1' : '0',
+      { ...options, shell: false, env: {
+        ...options.env,        FAKE_CLI_NO_LOAD: controls.noLoad ? '1' : '0',
         FAKE_CLI_NO_LIST: controls.noList ? '1' : '0',
         FAKE_CLI_LIST_FAIL: controls.listFail ? '1' : '0',
       } },
     ),
   };
 });
-import { CopilotSessions, CLI_ARGS, cliEnvironment } from '../src/main/sessions';
+import { existsSync } from 'node:fs';
+import { CopilotSessions, CLI_ARGS, cliEnvironment, cliCommand } from '../src/main/sessions';
 
 const sandboxes: string[] = [];
 const managers: CopilotSessions[] = [];
@@ -149,6 +149,21 @@ describe('ticket-bound ACP conversations', () => {
     expect(CLI_ARGS).not.toContain('--allow-all');
     expect(cliEnvironment('C:\\synthetic\\ticket-home').COPILOT_HOME).toBe('C:\\synthetic\\ticket-home');
     expect(cliEnvironment('C:\\synthetic\\ticket-home').COPILOT_ALLOW_ALL).toBe('false');
+  });
+
+  it('prefers an explicit CLI path and otherwise names a launchable command', () => {
+    const saved = process.env.COPILOT_CLI_PATH;
+    try {
+      process.env.COPILOT_CLI_PATH = 'C:\\custom\\copilot.exe';
+      expect(cliCommand()).toBe('C:\\custom\\copilot.exe');
+      delete process.env.COPILOT_CLI_PATH;
+      const resolved = cliCommand();
+      expect(resolved).not.toContain('.cmd');
+      if (process.platform === 'win32' && existsSync(resolved)) expect(resolved.endsWith('.exe')).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.COPILOT_CLI_PATH;
+      else process.env.COPILOT_CLI_PATH = saved;
+    }
   });
 
   it('discovers only sessions whose working directory is this ticket', async () => {

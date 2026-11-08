@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -60,6 +61,17 @@ export const CLI_ARGS = [
   '--acp', '--stdio', '--disable-builtin-mcps', '--disallow-temp-dir',
   '--no-custom-instructions', '--no-auto-update', '--dynamic-retrieval', 'skills=off',
 ];
+
+export function cliCommand(): string {
+  const configured = process.env.COPILOT_CLI_PATH;
+  if (configured) return configured;
+  if (process.platform === 'win32') {
+    // npm's copilot.cmd shim cannot be spawned directly; prefer the packaged executable.
+    const packaged = process.env.APPDATA && path.join(process.env.APPDATA, 'npm', 'node_modules', '@github', 'copilot', 'node_modules', '@github', `copilot-win32-${process.arch}`, 'copilot.exe');
+    if (packaged && existsSync(packaged)) return packaged;
+  }
+  return 'copilot';
+}
 
 export class CopilotSessions {
   private states = new Map<string, TicketSession>();
@@ -201,7 +213,7 @@ export class CopilotSessions {
   private async probe(id: string, cwd: string): Promise<SessionSummary[]> {
     const home = path.join(this.files.dataDir, 'tickets', id, 'copilot');
     await mkdir(home, { recursive: true });
-    const child = spawn(process.env.COPILOT_CLI_PATH || 'copilot', CLI_ARGS, {
+    const child = spawn(cliCommand(), CLI_ARGS, {
       cwd, env: cliEnvironment(home), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
     const connection = new acp.ClientApp().connect(acp.ndJsonStream(
@@ -290,7 +302,7 @@ export class CopilotSessions {
     const ticket = this.files.ticket(id);
     const home = path.join(this.files.dataDir, 'tickets', id, 'copilot');
     await mkdir(home, { recursive: true });
-    const child = spawn(process.env.COPILOT_CLI_PATH || 'copilot', CLI_ARGS, {
+    const child = spawn(cliCommand(), CLI_ARGS, {
       cwd: ticket.root, env: cliEnvironment(home), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
     const client = new acp.ClientApp()
