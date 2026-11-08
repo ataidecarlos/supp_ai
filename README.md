@@ -42,16 +42,33 @@ The summary can contain customer environment, symptoms, exact errors, affected t
 
 ## Workflow
 
-- Select a ticket to open its summary and independent Copilot conversation.
+- Home lists every ticket. Opening one adds a tab; switch with the tabs or the ticket dropdown, and close tabs you are done with. The last ticket you viewed reopens on launch.
+- Use the hamburger to hide the files rail or move the chat and files columns to either side. Those choices are saved in `~/.suppai/config.json`.
 - Use **Document** for visual editing, or **Markdown** for source editing. Supported visual content includes headings, lists, links, tables, images, and fenced code. Unsupported or lossy Markdown stays in source mode.
 - Edits auto-save after a short debounce. Saving, failures, and conflicts are visible. Opening a file alone does not rewrite it.
-- Toggle the normally hidden file pane to browse or import evidence. Imports copy selected files into the ticket; filename collisions require confirmation.
+- The files rail browses or imports evidence. Imports copy selected files into the ticket; filename collisions require confirmation.
 - Markdown is editable. Logs, text, JSON, and JSONL are read-only evidence previews. Common raster images are previewable. Other formats can open in their system viewer with approval.
-- Send a chat message or choose a troubleshooting suggestion. Only the installed Copilot CLI handles AI operations; there is no alternate provider or direct model API.
-- Switch tickets while Copilot works. Background progress and pending approvals remain attached to the originating ticket.
-- Use **New conversation** to start fresh without deleting prior conversations. The conversation selector restores earlier ones. Stop an active turn before changing its conversation.
+- Send a chat message or choose a troubleshooting suggestion. Only the installed Copilot CLI handles AI operations; there is no direct model API in the app. A CLI configured for a custom provider (`COPILOT_PROVIDER_*`) keeps that configuration.
+- **Find sessions** in the files rail lists Copilot sessions that already exist in this ticket's own Copilot home, and **Attach** resumes one. A ticket with no saved conversation attaches its most recent session automatically.
+- **Insert into editor** places a Copilot reply at the cursor in the open Markdown document and lets autosave persist it. It is placement, not generation.
+- Switch tickets while Copilot works. Background progress and pending approvals remain attached to the originating ticket, and each tab shows its own state.
+- Use **New conversation** to start fresh without deleting prior conversations. Stop an active turn before changing its conversation.
 - In-ticket file edits are automatically approved. Identifiable writes to the open file show a banner and temporarily pause editing.
 - External or unclassified operations require a ticket-specific, one-time approval. Always inspect commands and paths, including approval requests from background tickets.
+
+## Layout configuration
+
+`~/.suppai/config.json` holds the layout. Defaults match the editor-style shell: chat on the left, files on the right, rail visible.
+
+```json
+{
+  "chatSide": "left",
+  "filesSide": "right",
+  "filesHidden": false
+}
+```
+
+`chatSide` and `filesSide` accept `left` or `right`; `filesHidden` is a boolean. In-app toggles write this file. Hand edits apply at the next launch. Unknown keys are preserved, and an invalid file is reported rather than overwritten. `SUPPORT_CONFIG_DIR` overrides the folder for testing.
 
 ## File safety and limits
 
@@ -63,7 +80,7 @@ Preview limits are 2 MiB for text/Markdown, 10 MiB for raster images, and 5,000 
 
 ## Context isolation is not sandboxing
 
-Each ticket gets a dedicated Copilot process, working directory, and `COPILOT_HOME`. The app disables inherited custom instructions and built-in MCP integrations, avoids globally latest-session selection, and never automatically imports existing JSONL attachments as conversations.
+Each ticket gets a dedicated Copilot process, working directory, and `COPILOT_HOME`. The app disables inherited custom instructions and built-in MCP integrations, avoids globally latest-session selection, and never imports sessions from your global Copilot home: **Find sessions** only ever lists sessions whose working directory is that ticket. Existing JSONL attachments are never imported as conversations.
 
 This is **context and permission isolation**, not an OS filesystem sandbox. The CLI still runs with your machine's privileges. Commands can affect resources outside their working directory; they always require explicit approval. Approving an external operation authorizes its effects, so inspect it carefully. File watchers cannot provide transactional locking against arbitrary external programs or shell commands.
 
@@ -103,7 +120,10 @@ Optional environment overrides (use absolute Windows paths):
 $env:COPILOT_CLI_PATH = "C:\path\to\copilot.exe"
 $env:SUPPORT_TICKETS_ROOT = "C:\support\tickets"
 $env:SUPPORT_DATA_DIR = "C:\support\workspace-state"
+$env:SUPPORT_CONFIG_DIR = "C:\support\workspace-config"
 npm start
 ```
+
+A Copilot CLI installed through npm exposes a `.cmd` shim that cannot be launched directly, so the app prefers the packaged `copilot.exe` and falls back to `copilot` on `PATH`. Set `COPILOT_CLI_PATH` when the install is somewhere unusual.
 
 App data contains ticket-specific histories, Copilot homes, failed drafts, and recovery versions. Keep it protected like ticket evidence; do not include it in source control.
