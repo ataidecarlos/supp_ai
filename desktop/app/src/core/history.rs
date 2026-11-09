@@ -68,9 +68,6 @@ pub fn load_history(path: &Path) -> Result<History> {
             .map(|item| {
                 let conversation: Conversation =
                     serde_json::from_value(item.clone()).map_err(|_| invalid())?;
-                if !["user", "agent", "notice"].contains(&conversation.messages.iter().map(|message| message.role.as_str()).next().unwrap_or("user")) {
-                    return Err(invalid());
-                }
                 if conversation.messages.iter().any(|message| !["user", "agent", "notice"].contains(&message.role.as_str())) {
                     return Err(invalid());
                 }
@@ -95,10 +92,14 @@ pub fn load_history(path: &Path) -> Result<History> {
 pub fn save_history(path: &Path, history: &History) -> Result<()> {
     let mut object = match std::fs::read_to_string(path) {
         Ok(source) => serde_json::from_str::<Value>(&source)
-            .ok()
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_else(Map::new),
-        Err(_) => Map::new(),
+            .map_err(|error| Error::new("STATE", format!("Cannot parse {}: {error}", path.display())))?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| Error::new("STATE", format!("Saved conversation state in {} is invalid.", path.display())))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Map::new(),
+        Err(error) => {
+            return Err(Error::new("STATE", format!("Cannot read {}: {error}", path.display())));
+        }
     };
     object.insert(
         "conversations".to_string(),
