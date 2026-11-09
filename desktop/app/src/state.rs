@@ -17,6 +17,25 @@ pub struct AgentRuntime {
     pub view: SharedView,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SaveStatus {
+    Saved,
+    Unsaved,
+    Conflict,
+    Failed(String),
+}
+
+impl SaveStatus {
+    pub fn label(&self) -> String {
+        match self {
+            SaveStatus::Saved => "Saved".into(),
+            SaveStatus::Unsaved => "Unsaved".into(),
+            SaveStatus::Conflict => "Conflict".into(),
+            SaveStatus::Failed(message) => format!("Save failed: {message}"),
+        }
+    }
+}
+
 pub struct AppState {
     pub tickets: Vec<Ticket>,
     pub active: usize,
@@ -25,6 +44,12 @@ pub struct AppState {
     pub tree: TreeModel<FileNode<()>>,
     pub document: Option<FileDocument>,
     pub composer: TextEdit,
+    pub editor: TextEdit,
+    pub editing: bool,
+    pub status: SaveStatus,
+    pub conflict: Option<FileDocument>,
+    pub pending_save: Option<f64>,
+    pub clock: f64,
     pub config: Config,
     pub settings: Settings,
     pub data_dir: PathBuf,
@@ -90,6 +115,12 @@ impl AppState {
                         tree: FileTree::new().build(Vec::<(String, ())>::new()),
                         document: None,
                         composer: TextEdit::new(""),
+                        editor: TextEdit::new(""),
+                        editing: false,
+                        status: SaveStatus::Saved,
+                        conflict: None,
+                        pending_save: None,
+                        clock: 0.0,
                         config,
                         settings,
                         data_dir,
@@ -117,6 +148,12 @@ impl AppState {
             tree: FileTree::new().build(Vec::<(String, ())>::new()),
             document: None,
             composer: TextEdit::new(""),
+            editor: TextEdit::new(""),
+            editing: false,
+            status: SaveStatus::Saved,
+            conflict: None,
+            pending_save: None,
+            clock: 0.0,
             config,
             settings,
             data_dir,
@@ -148,6 +185,10 @@ impl AppState {
         if index >= self.tickets.len() {
             return;
         }
+        if !self.flush() {
+            self.error = Some("Resolve the current save or conflict before switching tickets.".into());
+            return;
+        }
         self.active = index;
         let ticket = self.tickets[index].clone();
         let store = Store::new(self.data_dir.clone());
@@ -173,16 +214,167 @@ impl AppState {
 
     pub fn open_file(&mut self, relative: &str) {
         let Some(ticket) = self.ticket().cloned() else { return };
+        if !self.flush() {
+            self.error = Some("Resolve the current save or conflict before opening another file.".into());
+            return;
+        }
         let store = Store::new(self.data_dir.clone());
         let normalized = relative.replace('/', "\\");
         match store.read(&ticket, &normalized) {
             Ok(document) => {
+                self.editor = TextEdit::new(document.content.clone());
                 self.document = Some(document);
+                self.editing = false;
+                self.conflict = None;
+                self.pending_save = None;
+                self.status = SaveStatus::Saved;
                 self.error = None;
                 self.tree.select(relative);
             }
             Err(error) => self.error = Some(error.message),
         }
+    }
+
+    pub fn toggle_editing(&mut self) {
+        if self.document_kind() != Some(FileKind::Markdown) {
+            return;
+        }
+        if self.editing {
+            if self.flush() {
+                self.editing = false;
+            }
+        } else {
+            self.editor = TextEdit::new(self.document_text());
+            self.editing = true;
+            self.conflict = None;
+            self.status = SaveStatus::Saved;
+        }
+    }
+
+    pub fn editor_changed(&mut self) {
+        if self.conflict.is_some() {
+            return;
+        }
+        self.status = SaveStatus::Unsaved;
+        self.pending_save = Some(self.clock + 0.6);
+    }
+
+    pub fn poll_saves(&mut self, clock: f64) -> bool {
+        self.clock = clock;
+        if self.pending_save.is_some_and(|at| at <= clock) {
+            self.pending_save = None;
+            return self.save();
+        }
+        false
+    }
+
+    pub fn save(&mut self) -> bool {
+        let (Some(ticket), Some(document)) = (self.ticket().cloned(), self.document.clone()) else {
+            return true;
+        };
+        if !self.editing || self.conflict.is_some() {
+            return self.conflict.is_none();
+        }
+        let store = Store::new(self.data_dir.clone());
+        match store.save(&ticket, &document.path, &self.editor.text, &document.revision) {
+            Ok(saved) => {
+                self.document = Some(saved);
+                self.status = SaveStatus::Saved;
+                true
+            }
+            Err(error) if error.code == "CONFLICT" => {
+                self.conflict = store.read(&ticket, &document.path).ok();
+                self.status = SaveStatus::Conflict;
+                false
+            }
+            Err(error) => {
+                self.status = SaveStatus::Failed(error.message);
+                false
+            }
+        }
+    }
+
+    pub fn use_disk(&mut self) {
+        if let Some(disk) = self.conflict.clone() {
+            self.editor = TextEdit::new(disk.content.clone());
+            self.document = Some(disk);
+            self.conflict = None;
+            self.pending_save = None;
+            self.status = SaveStatus::Saved;
+        }
+    }
+
+    pub fn keep_mine(&mut self) {
+        let (Some(ticket), Some(document), Some(conflict)) =
+            (self.ticket().cloned(), self.document.clone(), self.conflict.clone())
+        else {
+            return;
+        };
+        let store = Store::new(self.data_dir.clone());
+        match store.save(&ticket, &document.path, &self.editor.text, &conflict.revision) {
+            Ok(saved) => {
+                self.document = Some(saved);
+                self.conflict = None;
+                self.pending_save = None;
+                self.status = SaveStatus::Saved;
+            }
+            Err(error) => self.status = SaveStatus::Failed(error.message),
+        }
+    }
+
+    pub fn flush(&mut self) -> bool {
+        if self.conflict.is_some() {
+            return false;
+        }
+        if self.status == SaveStatus::Unsaved {
+            return self.save();
+        }
+        true
+    }
+
+    pub fn insert_message(&mut self, text: &str) {
+        if self.document_kind() != Some(FileKind::Markdown) {
+            return;
+        }
+        if !self.editing {
+            self.editor = TextEdit::new(self.document_text());
+            self.editing = true;
+        }
+        let mut next = self.editor.text.clone();
+        next.push_str("\n\n");
+        next.push_str(text);
+        self.editor.replace_text(next);
+        self.status = SaveStatus::Unsaved;
+        self.pending_save = Some(self.clock + 0.6);
+    }
+
+    pub fn open_link(&mut self, target: &str) {
+        if target.is_empty() || target.starts_with('#') {
+            return;
+        }
+        if target.starts_with("http://") || target.starts_with("https://") {
+            let _ = std::process::Command::new("cmd").args(["/C", "start", "", target]).spawn();
+            return;
+        }
+        let parent = self
+            .document
+            .as_ref()
+            .and_then(|document| document.path.rfind('\\').map(|index| document.path[..=index].to_string()))
+            .unwrap_or_default();
+        let clean = target.split('#').next().unwrap_or("").replace('/', "\\");
+        self.open_file(&format!("{parent}{clean}"));
+    }
+
+    pub fn agent_editing(&self) -> bool {
+        let (Some(ticket), Some(document)) = (self.ticket(), self.document.as_ref()) else {
+            return false;
+        };
+        let absolute = format!("{}\\{}", ticket.root.display(), document.path).replace('/', "\\").to_lowercase();
+        self.tools().iter().any(|tool| {
+            tool.kind == "edit"
+                && (tool.status == "pending" || tool.status == "in_progress")
+                && tool.paths.iter().any(|path| path.replace('/', "\\").to_lowercase() == absolute)
+        })
     }
 
     pub fn document_text(&self) -> String {
@@ -258,4 +450,5 @@ impl AppState {
             .unwrap_or(Activity::Idle)
     }
 }
+
 

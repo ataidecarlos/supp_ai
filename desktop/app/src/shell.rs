@@ -3,7 +3,7 @@ use rune::{El, ScrollSpec, Tx, col, el, row, text};
 use rune_kit::{FileNode, Kit, Markdown, TextArea, Tree, TreeItem, TreeModel};
 
 use crate::core::files::FileKind;
-use crate::state::AppState;
+use crate::state::{AppState, SaveStatus};
 
 pub fn view(s: &AppState, cx: &mut rune::Cx<AppState>) -> El {
     let k = Kit::neutral(cx.system_dark());
@@ -78,7 +78,17 @@ fn session(s: &AppState, k: &Kit) -> El {
                 transcript = transcript.child(text(message.text).font(type_::LABEL).color(k.c.warning.icon));
             }
             _ => {
-                transcript = transcript.child(Markdown::new(message.text).selectable(true).build(k));
+                let message_text = message.text.clone();
+                let mut block = col().w_full().gap(4.0)
+                    .child(Markdown::new(message.text).selectable(true).on_link(|s: &mut AppState, url: &str| s.open_link(url)).build(k));
+                if s.document_kind() == Some(FileKind::Markdown) {
+                    block = block.child(
+                        el().padding(4.0).radius(k.radius.sm).fill(k.c.surface_weak)
+                            .on_press(move |s: &mut AppState| s.insert_message(&message_text))
+                            .child(text("Insert into document").font(type_::LABEL).color(k.c.text_faint)),
+                    );
+                }
+                transcript = transcript.child(block);
             }
         }
     }
@@ -159,27 +169,76 @@ fn session(s: &AppState, k: &Kit) -> El {
 
 fn document(s: &AppState, k: &Kit) -> El {
     let path = s.document.as_ref().map(|document| document.path.clone()).unwrap_or_default();
-    let mut body = col().key("document/body").w_full().grow(1.0).min_h(0.0).padding(20.0)
-        .scroll(ScrollSpec { stick_bottom: false });
-    match s.document_kind() {
-        Some(FileKind::Markdown) => {
-            body = body.child(Markdown::new(s.document_text()).selectable(true).build(k));
-        }
-        Some(FileKind::Text) => {
-            body = body.child(text(s.document_text()).font(type_::MONO_CAPTION).color(k.c.text_faint));
-        }
-        Some(FileKind::Image) => {
-            body = body.child(text("Image evidence \u{2014} preview lands with the image task.").font(type_::BODY).color(k.c.text_faint));
-        }
-        _ => {
-            body = body.child(text("Select a file from the tree.").font(type_::BODY).color(k.c.text_faint));
-        }
+    let markdown = s.document_kind() == Some(FileKind::Markdown);
+    let mut header = row().w_full().padding(12.0).gap(8.0)
+        .child(text(path).font(type_::LABEL).color(k.c.text_faint))
+        .child(text(s.status.label()).font(type_::LABEL).color(k.c.text_faint));
+    if markdown {
+        header = header.child(
+            el().padding(5.0).radius(k.radius.sm).fill(k.c.surface_raised)
+                .on_press(|s: &mut AppState| s.toggle_editing())
+                .child(text(if s.editing { "Done" } else { "Edit" }).font(type_::LABEL).color(k.c.text_base)),
+        );
     }
-    col().key("document").grow(1.0).min_h(0.0).h_full().fill(k.c.bg_base)
-        .child(
-            row().w_full().padding(12.0).gap(8.0).child(text(path).font(type_::LABEL).color(k.c.text_faint)),
-        )
-        .child(body)
+    let mut pane = col().key("document").grow(1.0).min_h(0.0).h_full().fill(k.c.bg_base).child(header);
+
+    if s.agent_editing() {
+        pane = pane.child(
+            row().w_full().padding(8.0).gap(6.0).fill(k.c.warning.icon)
+                .child(text("Copilot is modifying this file. Editing is paused.").font(type_::LABEL).color(k.c.bg_base)),
+        );
+    }
+    if let Some(conflict) = &s.conflict {
+        let _ = conflict;
+        pane = pane.child(
+            row().w_full().padding(8.0).gap(8.0).fill(k.c.warning.icon)
+                .child(text("This file changed on disk. Both versions are preserved.").font(type_::LABEL).color(k.c.bg_base))
+                .child(
+                    el().padding(5.0).radius(k.radius.sm).fill(k.c.surface_raised)
+                        .on_press(|s: &mut AppState| s.use_disk())
+                        .child(text("Use disk version").font(type_::LABEL).color(k.c.text_base)),
+                )
+                .child(
+                    el().padding(5.0).radius(k.radius.sm).fill(k.c.surface_raised)
+                        .on_press(|s: &mut AppState| s.keep_mine())
+                        .child(text("Keep my version").font(type_::LABEL).color(k.c.text_base)),
+                ),
+        );
+    }
+    if s.status == SaveStatus::Unsaved {
+        pane = pane.child(
+            row().w_full().padding(6.0).child(text("Unsaved \u{2014} autosave in a moment").font(type_::LABEL).color(k.c.warning.icon)),
+        );
+    }
+
+    let body = if s.editing {
+        TextArea::new(&s.editor)
+            .on_edit(|s: &mut AppState| &mut s.editor)
+            .on_change(|s: &mut AppState, _tx: &mut Tx| s.editor_changed())
+            .build(k)
+            .grow(1.0)
+            .min_h(0.0)
+            .padding(16.0)
+    } else {
+        let mut body = col().key("document/body").w_full().grow(1.0).min_h(0.0).padding(20.0)
+            .scroll(ScrollSpec { stick_bottom: false });
+        body = match s.document_kind() {
+            Some(FileKind::Markdown) => body.child(
+                Markdown::new(s.document_text())
+                    .selectable(true)
+                    .on_link(|s: &mut AppState, url: &str| s.open_link(url))
+                    .build(k),
+            ),
+            Some(FileKind::Text) => {
+                body.child(text(s.document_text()).font(type_::MONO_CAPTION).color(k.c.text_faint))
+            }
+            Some(FileKind::Image) => body
+                .child(text("Image evidence \u{2014} preview lands with the image task.").font(type_::BODY).color(k.c.text_faint)),
+            _ => body.child(text("Select a file from the tree.").font(type_::BODY).color(k.c.text_faint)),
+        };
+        body
+    };
+    pane.child(body)
 }
 
 fn files(s: &AppState, k: &Kit) -> El {
