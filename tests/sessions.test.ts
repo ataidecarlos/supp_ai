@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { SpawnOptions } from 'node:child_process';
@@ -47,8 +47,22 @@ async function harness() {
   await sessions.initialize();
   return { root, files, sessions, events, a: files.tickets[0], b: files.tickets[1] };
 }
-afterEach(async () => {
-  await Promise.all(managers.splice(0).map((manager) => manager.close()));
+async function seedSession(h: { root: string; a: { id: string; root: string } }, sessionId: string): Promise<void> {
+  const home = path.join(h.root, 'data', 'tickets', h.a.id, 'copilot');
+  await mkdir(home, { recursive: true });
+  const store = path.join(home, 'fake-sessions.json');
+  let sessions: Record<string, unknown> = {};
+  try { sessions = JSON.parse(await readFile(store, 'utf8')) as Record<string, unknown>; } catch { /* new store */ }
+  sessions[sessionId] = {
+    cwd: h.a.root,
+    history: [{ role: 'user', text: 'replayed-marker' }, { role: 'agent', text: 'replayed reply' }],
+    title: 'External session',
+    updatedAt: new Date().toISOString(),
+  };
+  await writeFile(store, JSON.stringify(sessions));
+}
+
+afterEach(async () => {  await Promise.all(managers.splice(0).map((manager) => manager.close()));
   await Promise.all(fileManagers.splice(0).map((manager) => manager.close()));
   await Promise.all(sandboxes.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   controls.noLoad = false;
@@ -190,22 +204,44 @@ describe('ticket-bound ACP conversations', () => {
 
   it('attaches a discovered session and shows its transcript once', async () => {
     const h = await harness();
-    await h.sessions.send(h.a.id, 'attach-marker');
-    const [summary] = await h.sessions.discover(h.a.id);
+    await seedSession(h, 'external-1');
+    const found = await h.sessions.discover(h.a.id);
+    expect(found).toHaveLength(1);
     const before = h.sessions.state(h.a.id).conversations.length;
-    await h.sessions.attach(h.a.id, summary.sessionId);
+    await h.sessions.attach(h.a.id, 'external-1');
     expect(h.sessions.state(h.a.id).conversations).toHaveLength(before + 1);
-    expect(h.sessions.state(h.a.id).messages.map((message) => message.text).join(' ')).toContain('attach-marker');
+    expect(h.sessions.state(h.a.id).messages.map((message) => message.text).join(' ')).toContain('replayed-marker');
     const replayed = h.sessions.state(h.a.id).messages.length;
-    const markers = h.sessions.state(h.a.id).messages.filter((message) => message.text.includes('attach-marker')).length;
+    const markers = h.sessions.state(h.a.id).messages.filter((message) => message.text.includes('replayed-marker')).length;
     await h.sessions.send(h.a.id, 'after-attach');
-    expect(h.sessions.state(h.a.id).messages.filter((message) => message.text.includes('attach-marker'))).toHaveLength(markers);
+    expect(h.sessions.state(h.a.id).messages.filter((message) => message.text.includes('replayed-marker'))).toHaveLength(markers);
     expect(h.sessions.state(h.a.id).messages).toHaveLength(replayed + 2);
   });
 
-  it('rejects ids that were not discovered and is busy-safe', async () => {
+  it('rejects ids that were not discovered and sessions already attached', async () => {
     const h = await harness();
     await expect(h.sessions.attach(h.a.id, 'made-up')).rejects.toMatchObject({ code: 'SESSION' });
+    await h.sessions.send(h.a.id, 'first');
+    const [summary] = await h.sessions.discover(h.a.id);
+    await expect(h.sessions.attach(h.a.id, summary.sessionId)).rejects.toMatchObject({ code: 'SESSION' });
+  });
+
+  it('rejects a corrupt conversation title in saved history', async () => {
+    const h = await harness();
+    await h.sessions.send(h.a.id, 'title-marker');
+    await h.sessions.close();
+    const historyFile = path.join(h.root, 'data', 'tickets', h.a.id, 'history.json');
+    const stored = JSON.parse(await readFile(historyFile, 'utf8')) as { conversations: { title?: unknown }[] };
+    stored.conversations[0].title = 5;
+    await writeFile(historyFile, JSON.stringify(stored));
+    const restored = new CopilotSessions(h.files, vi.fn());
+    managers.push(restored);
+    await expect(restored.initialize()).rejects.toMatchObject({ code: 'STATE' });
+  });
+
+  it('is busy-safe while another attach is starting', async () => {
+    const h = await harness();
+    seedSession(h, 'external-2');
     const turn = h.sessions.send(h.a.id, '[DELAY] busy');
     await vi.waitFor(() => expect(h.sessions.state(h.a.id).activity).toBe('running'));
     await expect(h.sessions.attach(h.a.id, 'anything')).rejects.toMatchObject({ code: 'BUSY' });
@@ -215,11 +251,10 @@ describe('ticket-bound ACP conversations', () => {
 
   it('rolls back a failed attach', async () => {
     const h = await harness();
-    await h.sessions.send(h.a.id, 'keeper');
+    seedSession(h, 'vanishing');
     const [summary] = await h.sessions.discover(h.a.id);
     const previous = h.sessions.state(h.a.id).currentId;
     const conversations = h.sessions.state(h.a.id).conversations.length;
-    await h.sessions.destroy(h.a.id);
     await rm(path.join(h.root, 'data', 'tickets', h.a.id, 'copilot', 'fake-sessions.json'), { force: true });
     await expect(h.sessions.attach(h.a.id, summary.sessionId)).rejects.toBeTruthy();
     expect(h.sessions.state(h.a.id).conversations).toHaveLength(conversations);

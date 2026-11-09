@@ -63,6 +63,22 @@ describe('workspace config', () => {
     expect(await readFile(file(), 'utf8')).toBe('{ nope');
   });
 
+  it('names the config path in write and parse errors', async () => {
+    await writeFile(file(), '{ nope');
+    await expect(writeConfig({ chatSide: 'right' })).rejects.toMatchObject({ message: expect.stringContaining(configPath()) });
+    const result = await readConfig();
+    expect(result.error).toContain(configPath());
+    expect(result.error?.split(configPath())).toHaveLength(2);
+  });
+
+  it('treats a literal null file as invalid rather than absent', async () => {
+    await writeFile(file(), 'null');
+    const result = await readConfig();
+    expect(result.error).toContain(configPath());
+    await expect(writeConfig({ chatSide: 'right' })).rejects.toMatchObject({ code: 'STATE' });
+    expect(await readFile(file(), 'utf8')).toBe('null');
+  });
+
   it('creates the directory on first write', async () => {
     const nested = path.join(directory, 'nested');
     process.env.SUPPORT_CONFIG_DIR = nested;

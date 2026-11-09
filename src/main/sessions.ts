@@ -36,6 +36,12 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function samePath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 // The capability is advertised top-level by the RFD and under agentCapabilities by the SDK types.
 function canListSessions(response: acp.InitializeResponse): boolean {
   const agent = response.agentCapabilities as (acp.AgentCapabilities & { sessionCapabilities?: acp.SessionCapabilities }) | undefined;
@@ -45,7 +51,8 @@ function canListSessions(response: acp.InitializeResponse): boolean {
 
 function conversation(value: unknown): value is Conversation {
   return record(value) && typeof value.id === 'string' && typeof value.createdAt === 'string' &&
-    (value.sessionId === undefined || typeof value.sessionId === 'string') && Array.isArray(value.messages) &&
+    (value.sessionId === undefined || typeof value.sessionId === 'string') &&
+    (value.title === undefined || typeof value.title === 'string') && Array.isArray(value.messages) &&
     value.messages.every((message: unknown) => record(message) && typeof message.id === 'string' &&
       ['user', 'agent', 'notice'].includes(String(message.role)) && typeof message.text === 'string');
 }
@@ -201,7 +208,7 @@ export class CopilotSessions {
     for (let page = 0; page < 3; page++) {
       const response = await connection.agent.request('session/list', cursor ? { cwd, cursor } : { cwd });
       for (const info of response.sessions) {
-        if (info.cwd !== cwd) continue;
+        if (!samePath(info.cwd, cwd)) continue;
         found.push({ sessionId: info.sessionId, title: info.title ?? null, updatedAt: info.updatedAt ?? null });
       }
       cursor = response.nextCursor ?? undefined;
@@ -248,7 +255,10 @@ export class CopilotSessions {
     if (['starting', 'running', 'approval'].includes(state.activity)) throw new WorkspaceError('BUSY', 'Stop the active turn before attaching a session.');
     const summary = this.discovered.get(id)?.find((item) => item.sessionId === sessionId);
     if (!summary) throw new WorkspaceError('SESSION', 'Find this ticket\'s Copilot sessions again before attaching.');
+    if (state.conversations.some((item) => item.sessionId === sessionId)) throw new WorkspaceError('SESSION', 'That session is already attached to this ticket.');
     const previous = { currentId: state.currentId, messages: state.messages, tools: state.tools, error: state.error };
+    state.activity = 'starting';
+    this.publish(id);
     await this.destroy(id);
     const current: Conversation = {
       id: randomUUID(), createdAt: summary.updatedAt ?? new Date().toISOString(),
@@ -259,7 +269,6 @@ export class CopilotSessions {
     state.messages = current.messages;
     state.tools = [];
     state.error = null;
-    state.activity = 'starting';
     this.publish(id);
     try {
       await this.connect(id, current);

@@ -28,7 +28,7 @@ export function FilesRail({
   const unattached = discovered.filter((item) => !attached.has(item.sessionId));
 
   return <aside className={`files-rail ${side}`}>
-    <div className="files-rail-header"><strong>FILES</strong><button aria-label="Hide files" title="Hide files" onClick={onHide}><X size={14} /></button></div>
+    <div className="files-rail-header"><strong title={ticket.name}>{ticket.name}</strong><button aria-label="Hide files" title="Hide files" onClick={onHide}><X size={14} /></button></div>
     <button className="import-button" onClick={onImport}><Paperclip size={14} /> Import evidence</button>
     <div className="file-list">{files.map((item) => <button key={item.path} className={item.path === file ? 'active' : ''} onClick={() => onOpenFile(item.path)} title={item.path}>
       <FileText size={14} /><span>{item.path}</span>{item.path === ticket.mainFile && <small>MAIN</small>}

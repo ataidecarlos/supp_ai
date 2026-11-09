@@ -6,6 +6,7 @@ import type { Config, Result, WorkspaceEvent, WorkspaceSnapshot } from '../share
 import { DEFAULT_CONFIG } from '../shared/config';
 import { readConfig, writeConfig } from './config';
 import { atomicJson, optionalJson, TicketFiles, WorkspaceError } from './files';
+import { parseSettings } from './settings';
 import { CopilotSessions } from './sessions';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'support-file', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
@@ -179,16 +180,9 @@ app.whenReady().then(async () => {
     config = loadedConfig.config;
     configError = loadedConfig.error;
     const stored = await optionalJson(path.join(files.dataDir, 'settings.json'));
-    if (stored !== null) {
-      if (typeof stored !== 'object' || !('root' in stored) || typeof stored.root !== 'string') throw new WorkspaceError('STATE', 'Saved ticket-root settings are invalid.');
-      const saved = stored as Record<string, unknown>;
-      if (saved.lastTicketId !== undefined && saved.lastTicketId !== null && typeof saved.lastTicketId !== 'string') {
-        throw new WorkspaceError('STATE', 'Saved last-ticket setting is invalid.');
-      }
-      lastTicketId = typeof saved.lastTicketId === 'string' ? saved.lastTicketId : null;
-    }
-    let root = process.env.SUPPORT_TICKETS_ROOT;
-    if (!root && stored !== null) root = (stored as Record<string, unknown>).root as string;
+    const saved = stored === null ? { root: null, lastTicketId: null } : parseSettings(stored);
+    lastTicketId = saved.lastTicketId;
+    let root = process.env.SUPPORT_TICKETS_ROOT ?? saved.root;
     if (!root && !app.isPackaged) {
       const candidate = path.join(process.cwd(), 'tickets');
       try { if ((await stat(candidate)).isDirectory()) root = candidate; }

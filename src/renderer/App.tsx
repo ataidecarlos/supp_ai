@@ -25,6 +25,8 @@ export function App() {
   const [discovering, setDiscovering] = useState<string | null>(null);
   const [discoveryError, setDiscoveryError] = useState<Record<string, string | null>>({});
   const attempted = useRef(new Set<string>());
+  const sessionsRef = useRef(workspace.sessions);
+  sessionsRef.current = workspace.sessions;
   const [error, setError] = useState<string | null>(null);
   const [configDismissed, setConfigDismissed] = useState(false);
   const [initializing, setInitializing] = useState(true);
@@ -46,6 +48,9 @@ export function App() {
     setActiveId(restored);
     setOpenTickets(restored ? [restored] : []);
     setSelectedFiles({});
+    attempted.current.clear();
+    setDiscovered({});
+    setDiscoveryError({});
   }
 
   useEffect(() => {
@@ -86,6 +91,9 @@ export function App() {
     }
     setDiscovered((current) => ({ ...current, [id]: result.value }));
     if (!auto || !result.value.length) return;
+    const latest = sessionsRef.current.find((item) => item.ticketId === id);
+    if (!latest || latest.conversations.length) return;
+    if (latest.conversations.some((item) => item.sessionId === result.value[0].sessionId)) return;
     const attach = await window.workspace.attach(id, result.value[0].sessionId);
     if (!attach.ok) setDiscoveryError((current) => ({ ...current, [id]: attach.error }));
   }
@@ -126,6 +134,11 @@ export function App() {
     if (changing.current) return;
     changing.current = true;
     try {
+      const state = workspace.sessions.find((item) => item.ticketId === id);
+      if (state && ['starting', 'running', 'approval'].includes(state.activity)) {
+        setError('Stop the active turn before closing this ticket.');
+        return;
+      }
       if (!await guard()) { setError('Resolve the current file save or conflict before closing this ticket.'); return; }
       const index = openTickets.indexOf(id);
       const next = openTickets.filter((item) => item !== id);
