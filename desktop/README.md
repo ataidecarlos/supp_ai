@@ -35,12 +35,14 @@ Tests run the synthetic CLI at `../tests/fixtures/fake-cli.mjs` through Node, so
 
 ## What remains
 
-- Document editing: Edit/Document toggle, `TextArea`, autosave debounce, draft
-  recovery and conflict resolution, insert-into-document, link handling.
-- Image preview, "open externally", import button.
+- Image preview (Rune `ImageCache` + an image element) and the import button
+  (native open dialog).
 - Pane resizing/persistence (`SplitView` or drag handles) and the single-instance lock.
-- Live check against the real Copilot CLI with a ticket on disk.
-- Quit flush and parity checklist from the plan (Task 9–10).
+- Quit-time flush: Rune's close hook cannot cancel a close, so a quit inside the
+  600 ms autosave window can lose the last keystrokes.
+- Live check against the real Copilot CLI with a ticket on disk; the native app
+  has only been driven by the Node fixture so far.
+- Stale-read denial for agent edits (present in Electron, not yet ported).
 
 ## Compatibility
 
