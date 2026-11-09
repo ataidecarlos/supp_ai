@@ -12,13 +12,21 @@ use serde_json::{Value, json};
 use super::error::{Error, Result};
 
 type Responder = mpsc::Sender<Result<Value>>;
+
+fn id_key(id: &Value) -> Option<String> {
+    match id {
+        Value::Number(number) => Some(number.to_string()),
+        Value::String(text) => Some(text.clone()),
+        _ => None,
+    }
+}
 type NotificationHandler = Box<dyn Fn(Value) + Send>;
 type PermissionHandler = Box<dyn Fn(Value) -> Value + Send>;
 
 pub struct AcpClient {
     child: Option<Child>,
     stdin: Arc<Mutex<ChildStdin>>,
-    pending: Arc<Mutex<HashMap<u64, Responder>>>,
+    pending: Arc<Mutex<HashMap<String, Responder>>>,
     next_id: AtomicU64,
     closed: Arc<AtomicBool>,
     reader: Option<JoinHandle<()>>,
@@ -59,7 +67,7 @@ impl AcpClient {
         let stdout = child.stdout.take().ok_or_else(|| Error::new("CLI", "No stdout from the CLI."))?;
         let stderr = child.stderr.take();
         let stdin = child.stdin.take().ok_or_else(|| Error::new("CLI", "No stdin to the CLI."))?;
-        let pending: Arc<Mutex<HashMap<u64, Responder>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<String, Responder>>> = Arc::new(Mutex::new(HashMap::new()));
         let closed = Arc::new(AtomicBool::new(false));
         let notification: Arc<Mutex<Option<NotificationHandler>>> = Arc::new(Mutex::new(None));
         let permission: Arc<Mutex<Option<PermissionHandler>>> = Arc::new(Mutex::new(None));
@@ -91,7 +99,8 @@ impl AcpClient {
                     continue;
                 }
                 let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-                let id = message.get("id").and_then(Value::as_u64);
+                let id = message.get("id").cloned().filter(|id| !id.is_null());
+                let id = id.as_ref().and_then(id_key);
                 let method = message.get("method").and_then(Value::as_str);
                 match (id, method) {
                     (Some(id), Some(method)) => {
@@ -167,13 +176,13 @@ impl AcpClient {
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = mpsc::channel();
-        self.pending.lock().unwrap().insert(id, sender);
+        self.pending.lock().unwrap().insert(id.to_string(), sender);
         let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         write_message(&self.stdin, &message);
         match receiver.recv_timeout(timeout) {
             Ok(result) => result,
             Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
+                self.pending.lock().unwrap().remove(&id.to_string());
                 Err(Error::new("TIMEOUT", format!("Copilot did not answer {method} in time.")))
             }
         }
