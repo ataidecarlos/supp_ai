@@ -83,7 +83,7 @@ fn natural_cmp(left: &str, right: &str) -> std::cmp::Ordering {
     }
 }
 
-pub fn discover_tickets(root: &Path) -> Result<Vec<Ticket>> {
+pub fn discover_tickets(root: &Path, data_dir: &Path) -> Result<Vec<Ticket>> {
     let canonical = std::fs::canonicalize(root)
         .map_err(|error| Error::new("ROOT", format!("Cannot open {}: {error}", root.display())))?;
     if !canonical.is_dir() {
@@ -138,13 +138,15 @@ pub fn discover_tickets(root: &Path) -> Result<Vec<Ticket>> {
         let candidates = if matching.is_empty() { markdown.clone() } else { matching.clone() };
         let mut main_file = if matching.len() == 1 { Some(matching[0].clone()) } else { None };
         let id = ticket_id(&ticket_root);
-        let saved = std::fs::read_to_string(
-            // The saved selection lives in the app data dir; discovery leaves it to the caller.
-            std::path::Path::new(".").join(".never"),
-        );
-        let _ = saved;
-        if main_file.is_none() && candidates.len() == 1 {
-            main_file = candidates.first().cloned();
+        let saved_path = data_dir.join("tickets").join(&id).join("ticket.json");
+        if let Ok(saved) = std::fs::read_to_string(&saved_path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&saved) {
+                if let Some(selected) = value.get("mainFile").and_then(|value| value.as_str()) {
+                    if markdown.iter().any(|file| file == selected) {
+                        main_file = Some(selected.to_string());
+                    }
+                }
+            }
         }
         tickets.push(Ticket { id, name, root: ticket_root, main_file, main_candidates: candidates });
     }
