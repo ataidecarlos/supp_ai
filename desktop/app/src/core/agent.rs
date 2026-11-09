@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+﻿use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -16,6 +16,27 @@ pub const CLI_ARGS: &[&str] = &[
     "--acp", "--stdio", "--disable-builtin-mcps", "--disallow-temp-dir",
     "--no-custom-instructions", "--no-auto-update", "--dynamic-retrieval", "skills=off",
 ];
+
+#[derive(Debug, Clone)]
+pub struct Launch {
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+impl Launch {
+    pub fn copilot() -> Self {
+        Launch { command: cli_command(), args: CLI_ARGS.iter().map(|arg| arg.to_string()).collect() }
+    }
+
+    pub fn new(command: impl Into<String>, args: &[&str]) -> Self {
+        Launch { command: command.into(), args: args.iter().map(|arg| arg.to_string()).collect() }
+    }
+
+    fn spawn(&self, cwd: &Path, home: &Path) -> Result<AcpClient> {
+        let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        AcpClient::spawn(&self.command, &args, cwd, home, &[])
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {
@@ -147,8 +168,10 @@ pub fn spawn_agent(
     ticket: Ticket,
     data_dir: PathBuf,
     store: Store,
-    wake: Box<dyn Fn() + Send>,
+    launch: Launch,
+    wake: impl Fn() + Send + Sync + 'static,
 ) -> Result<(AgentHandle, SharedView)> {
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
     let view = Arc::new(Mutex::new(TicketView::new(load_history(&history_path(&data_dir, &ticket))?)));
     let (sender, receiver) = mpsc::channel();
     let worker_view = view.clone();
@@ -157,6 +180,7 @@ pub fn spawn_agent(
             ticket,
             data_dir,
             store,
+            launch,
             view: worker_view,
             wake,
             client: None,
@@ -164,19 +188,26 @@ pub fn spawn_agent(
             can_list: false,
             discovered: Vec::new(),
             pending: Arc::new(Mutex::new(HashMap::new())),
-            leases: Arc::new(Mutex::new(HashMap::new())),
-            capturing: Arc::new(AtomicBool::new(false)),
+            leases: Arc::new(Mutex::new(HashMap::new())),            capturing: Arc::new(AtomicBool::new(false)),
+            loading: Arc::new(AtomicBool::new(false)),
         };
         for command in receiver {
             let shutdown = matches!(command, AgentCommand::Shutdown);
             if let Err(error) = worker.handle(command) {
-                worker.fail(error);
+                if matches!(error.code, "BUSY" | "SESSION" | "APPROVAL" | "PROMPT") {
+                    let mut view = worker.view.lock().unwrap();
+                    view.error = Some(error.message);
+                    drop(view);
+                    worker.publish();
+                } else {
+                    worker.fail(error);
+                }
             }
             if shutdown {
                 break;
             }
         }
-        if let Some(mut client) = worker.client.take() {
+        if let Some(client) = worker.client.take() {
             client.close();
         }
     });
@@ -187,15 +218,17 @@ struct Worker {
     ticket: Ticket,
     data_dir: PathBuf,
     store: Store,
+    launch: Launch,
     view: SharedView,
-    wake: Box<dyn Fn() + Send>,
-    client: Option<AcpClient>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    client: Option<Arc<AcpClient>>,
     session_id: Option<String>,
     can_list: bool,
     discovered: Vec<SessionSummary>,
     pending: Arc<Mutex<HashMap<String, mpsc::Sender<Option<String>>>>>,
-    leases: Arc<Mutex<HashMap<String, Lease>>>,
+    leases: Arc<Mutex<HashMap<String, Vec<Lease>>>>,
     capturing: Arc<AtomicBool>,
+    loading: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -301,11 +334,16 @@ impl Worker {
             return Ok(());
         }
         let home = self.data_dir.join("tickets").join(&self.ticket.id).join("copilot");
-        let mut client = AcpClient::spawn(&cli_command(), CLI_ARGS, &self.ticket.root, &home, &[])?;
+        let client = self.launch.spawn(&self.ticket.root, &home)?;
         let view = self.view.clone();
         let wake = self.wake.clone();
         let leases = self.leases.clone();
+        let loading = self.loading.clone();
+        let capturing = self.capturing.clone();
         client.on_notification(Box::new(move |message: Value| {
+            if loading.load(Ordering::SeqCst) && !capturing.load(Ordering::SeqCst) {
+                return;
+            }
             let update = message.get("params").and_then(|params| params.get("update")).cloned();
             let Some(update) = update else { return };
             let mut view = view.lock().unwrap();
@@ -343,10 +381,12 @@ impl Worker {
                     view.messages().is_empty()
                 };
                 self.capturing.store(captured, Ordering::SeqCst);
+                self.loading.store(true, Ordering::SeqCst);
                 let loaded = client.request(
                     "session/load",
                     json!({ "sessionId": session_id, "cwd": self.ticket.root, "mcpServers": [] }),
                 );
+                self.loading.store(false, Ordering::SeqCst);
                 self.capturing.store(false, Ordering::SeqCst);
                 if let Err(error) = loaded {
                     client.close();
@@ -370,7 +410,7 @@ impl Worker {
                 let _ = self.persist();
             }
         }
-        self.client = Some(client);
+        self.client = Some(Arc::new(client));
         Ok(())
     }
 
@@ -391,8 +431,10 @@ impl Worker {
         let conversation = self.ensure_conversation();
         let load = conversation.session_id.clone();
         self.connect(load.as_deref())?;
-        let client = self.client.as_ref().unwrap();
-        if let Some(session_id) = &self.session_id {
+        let Some(session_id) = self.session_id.clone() else {
+            return Err(Error::new("SESSION", "Copilot did not start a session."));
+        };
+        {
             let mut view = self.view.lock().unwrap();
             if let Some(conversation) = view.history.current_mut() {
                 conversation.messages.push(Message { id: uuid_like(), role: "user".into(), text: text.clone() });
@@ -401,23 +443,31 @@ impl Worker {
                 }
             }
             view.activity = Activity::Running;
-            drop(view);
-            self.persist()?;
-            self.publish();
-            let prompt = format!(
-                "Support ticket workspace: {}\nMain summary: {}\nUse only this ticket's evidence unless an external operation is explicitly approved. Keep findings grounded in the files. Reread files before editing if they may have changed. Do not access other support tickets automatically.\n\n{}",
-                self.ticket.root.display(),
-                self.ticket.main_file.clone().unwrap_or_else(|| "Select the ticket summary explicitly.".into()),
-                text
+        }
+        self.persist()?;
+        self.publish();
+        let prompt = format!(
+            "Support ticket workspace: {}\nMain summary: {}\nUse only this ticket's evidence unless an external operation is explicitly approved. Keep findings grounded in the files. Reread files before editing if they may have changed. Do not access other support tickets automatically.\n\n{}",
+            self.ticket.root.display(),
+            self.ticket.main_file.clone().unwrap_or_else(|| "Select the ticket summary explicitly.".into()),
+            text
+        );
+        let client = self.client.as_ref().expect("connected").clone();
+        let view = self.view.clone();
+        let wake = self.wake.clone();
+        let history = history_path(&self.data_dir, &self.ticket);
+        std::thread::spawn(move || {
+            let result = client.request(
+                "session/prompt",
+                json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": prompt }] }),
             );
-            match client.request("session/prompt", json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": prompt }] })) {
+            let mut guard = view.lock().unwrap();
+            match result {
                 Ok(result) => {
                     let stop_reason = result["stopReason"].as_str().unwrap_or("unknown").to_string();
-                    let mut view = self.view.lock().unwrap();
-                    view.activity = if stop_reason == "cancelled" { Activity::Idle } else { Activity::Completed };
+                    guard.activity = if stop_reason == "cancelled" { Activity::Idle } else { Activity::Completed };
                     if stop_reason != "end_turn" && stop_reason != "cancelled" {
-                        let conversation = view.history.current_mut();
-                        if let Some(conversation) = conversation {
+                        if let Some(conversation) = guard.history.current_mut() {
                             conversation.messages.push(Message {
                                 id: uuid_like(),
                                 role: "notice".into(),
@@ -425,24 +475,24 @@ impl Worker {
                             });
                         }
                     }
-                    for tool in &mut view.tools {
-                        if tool.status == "pending" || tool.status == "in_progress" {
-                            tool.status = "interrupted".into();
-                        }
-                    }
-                    drop(view);
-                    self.persist()?;
-                    self.publish();
-                    Ok(())
                 }
                 Err(error) => {
-                    self.client = None;
-                    Err(error)
+                    guard.activity = Activity::Failed;
+                    guard.error = Some(error.message);
+                    guard.approvals.clear();
                 }
             }
-        } else {
-            Err(Error::new("SESSION", "Copilot did not start a session."))
-        }
+            for tool in &mut guard.tools {
+                if tool.status == "pending" || tool.status == "in_progress" {
+                    tool.status = "interrupted".into();
+                }
+            }
+            let snapshot = guard.history.clone();
+            drop(guard);
+            let _ = save_history(&history, &snapshot);
+            wake();
+        });
+        Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
@@ -465,7 +515,7 @@ impl Worker {
     fn discover(&mut self) -> Result<()> {
         if self.client.is_none() {
             let home = self.data_dir.join("tickets").join(&self.ticket.id).join("copilot");
-            let mut client = AcpClient::spawn(&cli_command(), CLI_ARGS, &self.ticket.root, &home, &[])?;
+            let client = self.launch.spawn(&self.ticket.root, &home)?;
             let initialized = client.request(
                 "initialize",
                 json!({ "protocolVersion": 1, "clientCapabilities": {}, "clientInfo": { "name": "suppai", "version": "0.1.0" } }),
@@ -478,6 +528,7 @@ impl Worker {
                 json!({ "sessions": [] })
             };
             client.close();
+            drop(client);
             self.record_discovered(&found);
             return Ok(());
         }
@@ -583,7 +634,10 @@ impl Worker {
     }
 
     fn disconnect(&mut self) {
-        if let Some(mut client) = self.client.take() {
+        for (_, sender) in self.pending.lock().unwrap().drain() {
+            let _ = sender.send(None);
+        }
+        if let Some(client) = self.client.take() {
             client.close();
         }
         self.session_id = None;
@@ -591,7 +645,7 @@ impl Worker {
     }
 }
 
-fn apply_update(view: &mut TicketView, update: &Value, leases: &Arc<Mutex<HashMap<String, Lease>>>) {
+fn apply_update(view: &mut TicketView, update: &Value, leases: &Arc<Mutex<HashMap<String, Vec<Lease>>>>) {
     let kind = update["sessionUpdate"].as_str().unwrap_or("");
     match kind {
         "agent_message_chunk" | "user_message_chunk" => {
@@ -610,7 +664,7 @@ fn apply_update(view: &mut TicketView, update: &Value, leases: &Arc<Mutex<HashMa
             let id = update["toolCallId"].as_str().unwrap_or("").to_string();
             let existing = view.tools.iter().position(|tool| tool.id == id);
             let status = update["status"].as_str().unwrap_or("pending").to_string();
-            let paths = update["locations"]
+            let paths: Vec<String> = update["locations"]
                 .as_array()
                 .map(|items| {
                     items.iter().filter_map(|item| item["path"].as_str().map(str::to_string)).collect()
@@ -648,8 +702,8 @@ fn permission(
     store: &Store,
     view: &SharedView,
     pending: &Arc<Mutex<HashMap<String, mpsc::Sender<Option<String>>>>>,
-    leases: &Arc<Mutex<HashMap<String, Lease>>>,
-    wake: &Box<dyn Fn() + Send>,
+    leases: &Arc<Mutex<HashMap<String, Vec<Lease>>>>,
+    wake: &Arc<dyn Fn() + Send + Sync>,
     message: &Value,
 ) -> Value {
     let params = &message["params"];
@@ -679,7 +733,9 @@ fn permission(
                         leases
                             .lock()
                             .unwrap()
-                            .insert(tool_call["toolCallId"].as_str().unwrap_or("").to_string(), lease);
+                            .entry(tool_call["toolCallId"].as_str().unwrap_or("").to_string())
+                            .or_default()
+                            .push(lease);
                     }
                     Err(error) => {
                         let mut view = view.lock().unwrap();

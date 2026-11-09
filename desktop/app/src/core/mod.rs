@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod agent;
 pub mod config;
 pub mod error;
 pub mod files;

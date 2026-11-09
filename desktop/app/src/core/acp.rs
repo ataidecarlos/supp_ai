@@ -24,12 +24,12 @@ type NotificationHandler = Box<dyn Fn(Value) + Send>;
 type PermissionHandler = Box<dyn Fn(Value) -> Value + Send>;
 
 pub struct AcpClient {
-    child: Option<Child>,
+    child: Mutex<Option<Child>>,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<String, Responder>>>,
     next_id: AtomicU64,
     closed: Arc<AtomicBool>,
-    reader: Option<JoinHandle<()>>,
+    reader: Mutex<Option<JoinHandle<()>>>,
     notification: Arc<Mutex<Option<NotificationHandler>>>,
     permission: Arc<Mutex<Option<PermissionHandler>>>,
 }
@@ -141,12 +141,12 @@ impl AcpClient {
         });
 
         Ok(AcpClient {
-            child: Some(child),
+            child: Mutex::new(Some(child)),
             stdin,
             pending,
             next_id: AtomicU64::new(1),
             closed,
-            reader: Some(reader),
+            reader: Mutex::new(Some(reader)),
             notification,
             permission,
         })
@@ -188,13 +188,13 @@ impl AcpClient {
         }
     }
 
-    pub fn close(&mut self) {
+    pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
-        if let Some(mut child) = self.child.take() {
+        if let Some(mut child) = self.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        if let Some(reader) = self.reader.take() {
+        if let Some(reader) = self.reader.lock().unwrap().take() {
             let _ = reader.join();
         }
     }
