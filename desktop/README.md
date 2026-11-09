@@ -28,17 +28,19 @@ Rune is pinned to `dev` rev `e970367b` in `desktop/Cargo.toml`. Do not float it.
 | History | `core/history.rs` | Reads and writes existing Electron `history.json`, including `title`/`sessionId`. |
 | ACP | `core/acp.rs` | NDJSON JSON-RPC client, numeric and string ids, notifications, permission requests, crash handling. |
 | Agent | `core/agent.rs` | Per-ticket worker: prompt streaming, tool updates, auto-approved local edits with leases, approvals, stop, new/select conversation, discovery, attach with replay capture, shutdown. |
-| UI | `shell.rs`, `state.rs` | Four-pane skeleton only (strip, session, document, tree placeholders). |
+| UI | `shell.rs`, `state.rs` | Four panes wired to real data: ticket strip with activity, session transcript + composer + approvals + attach list, rendered Markdown document, file tree. Document editing is not wired yet. |
 
 Tests run the synthetic CLI at `../tests/fixtures/fake-cli.mjs` through Node, so
 `node` must be on `PATH`.
 
 ## What remains
 
-Tasks 7–10 of the plan: wire the state to the real panes (ticket strip,
-`FileTree`, `Markdown` render, `TextArea` editing with conflicts, session
-transcript and approvals, insert into document, links, image preview, quit
-flush, single-instance lock, README/parity pass).
+- Document editing: Edit/Document toggle, `TextArea`, autosave debounce, draft
+  recovery and conflict resolution, insert-into-document, link handling.
+- Image preview, "open externally", import button.
+- Pane resizing/persistence (`SplitView` or drag handles) and the single-instance lock.
+- Live check against the real Copilot CLI with a ticket on disk.
+- Quit flush and parity checklist from the plan (Task 9–10).
 
 ## Compatibility
 
